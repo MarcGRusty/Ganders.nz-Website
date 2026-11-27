@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ganders-nz",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    { "binding": "DB", "database_name": "ganders-nz", "database_id": "REPLACE_AT_DEPLOY", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "ganders-nz-media" }],
+  "kv_namespaces": [{ "binding": "KV", "id": "REPLACE_AT_DEPLOY" }],
+  "vars": { "SITE_URL": "https://ganders.nz" },
+  "assets": { "directory": "./public" },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": { "enabled": true }
+}
