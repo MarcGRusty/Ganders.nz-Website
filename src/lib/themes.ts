@@ -13,8 +13,8 @@ export const PRESETS: (Theme & { blurb: string })[] = [
     blurb: 'A nautical chart. Pale chart paper, deep navy ink, buoy orange that turns sodium-lamp amber at night.',
     light: pal('#E6ECEE', '#EEF2F3', '#0F2A3D', '#557080', '#B9C9D1', '#E2571E', '#FFFFFF', '#1F6A80'),
     dark: pal('#0A1822', '#0F202C', '#D9E6EC', '#7E98A6', '#1F3746', '#F2A541', '#0A1822', '#5DB6CF'),
-    displayFont: 'Archivo', bodyFont: 'Atkinson Hyperlegible', monoFont: 'IBM Plex Mono',
-    displayWeight: 750, displayWidth: 115, displayItalic: false, displayUpper: true,
+    displayFont: 'Montserrat', bodyFont: 'Montserrat', monoFont: 'IBM Plex Mono',
+    displayWeight: 700, displayWidth: 100, displayItalic: false, displayUpper: true,
     radius: 0, shadow: 'none', texture: 'contour',
   },
   {
