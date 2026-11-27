@@ -63,6 +63,7 @@ export interface GenerateOptions {
   choice?: string;   // 'auto' (default from settings) or a provider id
   model?: string;    // optional override for a manual pick
   maxTokens?: number;
+  files?: { mime: string; data: string; name?: string }[];
 }
 
 export interface GenerateResult {
@@ -73,7 +74,7 @@ export interface GenerateResult {
   tried: { provider: string; error: string }[];
 }
 
-const TIMEOUT: Record<Task, number> = { short: 40_000, ideas: 60_000, rewrite: 60_000, draft: 120_000, svg: 90_000, module: 120_000 };
+const TIMEOUT: Record<Task, number> = { short: 40_000, ideas: 60_000, rewrite: 60_000, draft: 120_000, svg: 90_000, module: 120_000, design: 90_000 };
 
 export async function generate(env: Env, o: GenerateOptions): Promise<GenerateResult> {
   const settings = await getAiSettings(env);
@@ -102,7 +103,7 @@ export async function generate(env: Env, o: GenerateOptions): Promise<GenerateRe
     const timer = setTimeout(() => ctl.abort(), TIMEOUT[o.task]);
     try {
       const key = p.needsKey ? await open(env.APP_KEY, row!.enc_key!) : '';
-      const raw = await p.run({ system, prompt: o.prompt, task: o.task, maxTokens: o.maxTokens }, { env, key, model, signal: ctl.signal });
+      const raw = await p.run({ system, prompt: o.prompt, task: o.task, maxTokens: o.maxTokens, files: o.files }, { env, key, model, signal: ctl.signal });
       if (!raw.trim()) throw new Error('Empty answer.');
       await log(env, o.task, id, model, true, Date.now() - started);
       const g = guard(raw);
@@ -139,6 +140,7 @@ export function extractJson<T = any>(text: string): T {
 function mockAnswer(task: Task, prompt: string) {
   if (task === 'svg') return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="8" fill="#0E1B22"/><text x="32" y="44" text-anchor="middle" font-family="Georgia" font-size="34" fill="#E7EBE8">MG</text><circle cx="52" cy="12" r="4" fill="#B9860B"/></svg>';
   if (task === 'ideas') return JSON.stringify([{ title: 'What ten years in IT taught me about trust', angle: 'Lessons from fixing other people\u2019s worst days.' }, { title: 'A Kiwi small business security checklist', angle: 'Five things to do this week.' }, { title: 'Cooking Thai at home in a Wellington southerly', angle: 'Comfort food and the stories behind it.' }]);
+  if (task === 'design') return JSON.stringify({ name: 'Southerly Swell', why: 'Sample answer for testing.', light: { paper: '#EEF1EF', surface: '#F6F8F7', ink: '#14232B', muted: '#5B6B72', line: '#C8D2CE', accent: '#C2551F', onAccent: '#FFFFFF', accent2: '#2B6E7A' }, dark: { paper: '#0F1A20', surface: '#15232A', ink: '#E2E9E6', muted: '#8FA1A8', line: '#25373F', accent: '#F0A04B', onAccent: '#0F1A20', accent2: '#6FB8C4' }, displayFont: 'Archivo', bodyFont: 'Atkinson Hyperlegible', monoFont: 'IBM Plex Mono', displayWeight: 700, displayWidth: 110, displayUpper: false, displayItalic: false, radius: 2, shadow: 'none', texture: 'contour' });
   if (task === 'short') return JSON.stringify(['Why I rebuilt my website from scratch', 'A site that finally feels like me', 'Starting over, on purpose']);
   return `<p>This is a sample answer \u2014 written without a real AI service so the flow can be tested.</p><p>${prompt.slice(0, 120).replace(/</g, '&lt;')}</p>`;
 }

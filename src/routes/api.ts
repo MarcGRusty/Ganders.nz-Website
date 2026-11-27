@@ -6,6 +6,7 @@ import { Hono } from 'hono';
 import type { Env, Page, Post } from '../types';
 import { requireAuth, hashPassword, verifyPassword, startSession, endSession, loadUser, need, can, audit } from '../lib/auth';
 import peopleRoutes from './people';
+import inspireRoutes from './inspire';
 import { ensureSeed, getSettings, saveSettings, listPages, getPageById, listPosts, getPostById, snapshot, slugify } from '../lib/db';
 import { guard, guardDeep } from '../lib/style-guard';
 import { BLOCK_TYPES, newBlock } from '../lib/defaults';
@@ -75,6 +76,7 @@ api.use('/*', async (c, next) => (c.req.path.startsWith('/api/auth/') ? next() :
 
 api.route('/ai', aiRoutes);
 api.route('/people', peopleRoutes);
+api.route('/inspiration', inspireRoutes);
 
 // ---------- Settings ----------
 api.get('/settings', async (c) => c.json(await getSettings(c.env)));

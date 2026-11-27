@@ -700,6 +700,31 @@ const ratio = (a: string, b: string) => { const [x, y] = [lumi(a), lumi(b)].sort
 const clone = <T,>(o: T): T => JSON.parse(JSON.stringify(o));
 const swatches = (t: Any) => `<div class="sw">${['paper', 'ink', 'accent', 'accent2'].map((k) => `<i style="background:${esc(t.light[k])}"></i>`).join('')}<b></b>${['paper', 'ink', 'accent'].map((k) => `<i style="background:${esc(t.dark[k])}"></i>`).join('')}</div>`;
 
+/** The main colours of a picture, worked out in the browser. */
+async function paletteOf(src: string): Promise<string[]> {
+  try {
+    const img = document.createElement('img'); img.src = src; await img.decode();
+    const cv = document.createElement('canvas'); cv.width = 64; cv.height = 64;
+    const cx = cv.getContext('2d', { willReadFrequently: true })!; cx.drawImage(img, 0, 0, 64, 64);
+    const d = cx.getImageData(0, 0, 64, 64).data;
+    const buckets = new Map<number, { n: number; r: number; g: number; b: number }>();
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] < 128) continue;
+      const k = ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+      const v = buckets.get(k) || { n: 0, r: 0, g: 0, b: 0 };
+      v.n++; v.r += d[i]; v.g += d[i + 1]; v.b += d[i + 2]; buckets.set(k, v);
+    }
+    const hex = (v: number) => Math.round(v).toString(16).padStart(2, '0');
+    const out: [number, number, number][] = [];
+    for (const v of [...buckets.values()].sort((a, b) => b.n - a.n)) {
+      const c: [number, number, number] = [v.r / v.n, v.g / v.n, v.b / v.n];
+      if (out.every((o) => Math.abs(o[0] - c[0]) + Math.abs(o[1] - c[1]) + Math.abs(o[2] - c[2]) > 60)) out.push(c);
+      if (out.length >= 6) break;
+    }
+    return out.map((c) => `#${hex(c[0])}${hex(c[1])}${hex(c[2])}`.toUpperCase());
+  } catch { return []; }
+}
+
 async function viewDesign(main: HTMLElement) {
   const [s, presets] = await Promise.all([api<Any>('GET', '/settings'), api<Any[]>('GET', '/themes')]);
   let t: Any = clone(s.theme);
@@ -744,6 +769,7 @@ async function viewDesign(main: HTMLElement) {
   const draw = () => {
     const p = t[view];
     $('#dpanels').innerHTML = `
+      <div class="panel" id="insp"></div>
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Themes</div><div class="tlist">${presets.map((x) => presetCard(x)).join('')}</div>
         ${mine.length ? `<div class="mono hint" style="margin:16px 0 10px">Your themes</div><div class="tlist">${mine.map((x) => presetCard(x, true)).join('')}</div>` : ''}</div>
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Light and dark</div>
@@ -806,6 +832,55 @@ async function viewDesign(main: HTMLElement) {
     root.querySelectorAll<HTMLInputElement>('[data-b]').forEach((i) => i.addEventListener('change', () => { t[i.dataset.b!] = i.checked; changed(); }));
     root.querySelectorAll<HTMLSelectElement>('[data-s]').forEach((i) => i.addEventListener('change', () => { t[i.dataset.s!] = i.value; $('#checks').innerHTML = checks(); changed(); }));
     slot('logo', 'logo'); slot('fav', 'favicon');
+    drawInspiration();
+  };
+
+  // ----- Inspiration: files and websites the AI turns into a theme -----
+  let insp: Any[] | null = null;
+  const drawInspiration = async () => {
+    const box = $('#insp');
+    if (!box) return;
+    if (!insp) { try { insp = await api<Any[]>('GET', '/inspiration'); } catch { insp = []; } }
+    const canAi = can('ai.use');
+    box.innerHTML = `<div class="mono hint" style="margin-bottom:6px">Inspiration</div>
+      <p class="hint" style="margin:0 0 12px">Add photos, screenshots, PDFs or websites you like. AI reads them and builds a theme from them.</p>
+      <div class="drop" id="insp-drop" style="padding:18px">Drop files here, or click to add (several at once is fine)</div>
+      <label class="f" style="margin-top:12px"><span>Websites, one per line</span><textarea id="insp-urls" rows="2" placeholder="craigmod.com&#10;klim.co.nz"></textarea></label>
+      <button class="btn ghost sm" id="insp-add">Add websites</button>
+      ${insp.length ? `<div class="insp-list">${insp.map((x) => `<div class="insp" data-id="${x.id}">
+        ${x.kind === 'file' ? (/\.(pdf)$/i.test(x.media_key) ? '<div class="doc mono">pdf</div>' : `<img src="/media/${esc(x.media_key)}" alt="">`) : `<div class="doc mono">web</div>`}
+        <div style="min-width:0"><b class="clip">${esc(x.title)}</b>${x.summary && x.kind === 'file' ? `<div class="sw sm">${(JSON.parse(x.summary).palette || []).map((cl: string) => `<i style="background:${esc(cl)}"></i>`).join('')}</div>` : ''}
+          <input type="text" data-note="${x.id}" value="${esc(x.note)}" placeholder="What do you like about it?"></div>
+        <button class="btn ghost sm" data-rm="${x.id}" aria-label="Remove">Remove</button></div>`).join('')}</div>` : ''}
+      ${canAi ? `<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)"><label class="f"><span>Anything else? (optional)</span><input type="text" id="insp-brief" placeholder="e.g. calm and coastal, readable at night"></label>
+        <div class="row"><span id="insp-pick"></span><button class="btn" id="insp-go" ${insp.length ? '' : 'disabled'}>Create a theme from these</button></div><div id="insp-out"></div></div>` : ''}`;
+    if (canAi) aiPicker('insp-ai').then((h) => { const el = $('#insp-pick'); if (el) el.innerHTML = h; }).catch(() => {});
+    dropZone($('#insp-drop'), async (files) => {
+      const up = await uploadFiles(Array.from(files).filter((f) => /^image\/|application\/pdf/.test(f.type)));
+      for (const m of up) {
+        const palette = m.type.startsWith('image/') ? await paletteOf(`/media/${m.key}`) : [];
+        try { insp!.unshift(await api('POST', '/inspiration', { kind: 'file', media_key: m.key, title: m.name, palette })); } catch (e) { fail(e); }
+      }
+      drawInspiration();
+    });
+    $('#insp-add').addEventListener('click', async () => {
+      const urls = ($('#insp-urls') as HTMLTextAreaElement).value.split(/[\s,]+/).map((u) => u.trim()).filter(Boolean).slice(0, 10);
+      for (const url of urls) { try { insp!.unshift(await api('POST', '/inspiration', { kind: 'url', url })); } catch (e) { fail(e); } }
+      drawInspiration();
+    });
+    box.querySelectorAll<HTMLInputElement>('[data-note]').forEach((i) => i.addEventListener('change', () => { api('PUT', `/inspiration/${i.dataset.note}`, { note: i.value }).catch(fail); const it = insp!.find((x) => String(x.id) === i.dataset.note); if (it) it.note = i.value; }));
+    box.querySelectorAll<HTMLElement>('[data-rm]').forEach((b) => b.addEventListener('click', async () => { await api('DELETE', `/inspiration/${b.dataset.rm}`); insp = insp!.filter((x) => String(x.id) !== b.dataset.rm); drawInspiration(); }));
+    $('#insp-go')?.addEventListener('click', async (e) => {
+      await busy(e.currentTarget as HTMLButtonElement, 'Reading your inspiration...', async () => {
+        try {
+          const r = await api<Any>('POST', '/inspiration/theme', { brief: ($('#insp-brief') as HTMLInputElement).value, choice: ($('#insp-ai') as HTMLSelectElement | null)?.value });
+          t = { ...r.theme, mode: t.mode, toggle: t.toggle }; edited = true;
+          const why = `<div class="card" style="margin-top:12px"><b>${esc(r.theme.name)}</b><p style="margin:6px 0 0">${esc(r.why)}</p>${madeBy(r)}<p class="hint" style="margin:8px 0 0">${r.seen ? `Looked at ${r.seen} file${r.seen > 1 ? 's' : ''} directly. ` : ''}It is in the preview now. Save design to use it, or Save as my theme to keep it.</p></div>`;
+          draw(); refresh();
+          setTimeout(() => { const o = $('#insp-out'); if (o) o.innerHTML = why; }, 60);
+        } catch (err) { fail(err); }
+      });
+    });
   };
 
   const slot = (id: string, key: 'logo' | 'favicon') => {

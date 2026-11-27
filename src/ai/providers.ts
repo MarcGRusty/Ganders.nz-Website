@@ -3,13 +3,15 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env } from '../types';
 
-export type Task = 'draft' | 'rewrite' | 'short' | 'ideas' | 'svg' | 'module';
+export type Task = 'draft' | 'rewrite' | 'short' | 'ideas' | 'svg' | 'module' | 'design';
 
 export interface GenRequest {
   system: string;
   prompt: string;
   task: Task;
   maxTokens?: number;
+  /** Pictures or PDFs to look at, base64. Services that cannot see them get the text only. */
+  files?: { mime: string; data: string; name?: string }[];
 }
 
 export interface ProviderDef {
@@ -24,8 +26,8 @@ export interface ProviderDef {
 }
 
 /** Shorter tasks need less thinking; long-form writing gets more. */
-const EFFORT: Record<Task, 'low' | 'medium' | 'high'> = { short: 'low', ideas: 'medium', rewrite: 'medium', draft: 'high', svg: 'medium', module: 'high' };
-const MAX: Record<Task, number> = { short: 2000, ideas: 6000, rewrite: 8000, draft: 16000, svg: 8000, module: 16000 };
+const EFFORT: Record<Task, 'low' | 'medium' | 'high'> = { short: 'low', ideas: 'medium', rewrite: 'medium', draft: 'high', svg: 'medium', module: 'high', design: 'medium' };
+const MAX: Record<Task, number> = { short: 2000, ideas: 6000, rewrite: 8000, draft: 16000, svg: 8000, module: 16000, design: 8000 };
 
 async function postJson(url: string, body: unknown, headers: Record<string, string>, signal: AbortSignal) {
   const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal });
@@ -36,11 +38,18 @@ async function postJson(url: string, body: unknown, headers: Record<string, stri
   return data;
 }
 
+const isImage = (m: string) => /^image\/(png|jpeg|webp|gif)$/.test(m);
+function openAiContent(req: GenRequest) {
+  const imgs = (req.files || []).filter((f) => isImage(f.mime));
+  if (!imgs.length) return req.prompt;
+  return [{ type: 'text', text: req.prompt }, ...imgs.map((f) => ({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } }))];
+}
+
 // OpenAI and xAI share the chat completions format.
 const chatCompletions = (base: string) => async (req: GenRequest, { key, model, signal }: { key: string; model: string; signal: AbortSignal }) => {
   const data = await postJson(`${base}/chat/completions`, {
     model,
-    messages: [{ role: 'system', content: req.system }, { role: 'user', content: req.prompt }],
+    messages: [{ role: 'system', content: req.system }, { role: 'user', content: openAiContent(req) }],
     max_completion_tokens: req.maxTokens ?? MAX[req.task],
   }, { authorization: `Bearer ${key}` }, signal);
   return String(data.choices?.[0]?.message?.content ?? '');
@@ -60,7 +69,12 @@ export const PROVIDERS: ProviderDef[] = [
         model,
         max_tokens: req.maxTokens ?? MAX[req.task],
         system: req.system,
-        messages: [{ role: 'user', content: req.prompt }],
+        messages: [{ role: 'user', content: req.files?.length ? [
+          ...req.files.filter((f) => isImage(f.mime) || f.mime === 'application/pdf').map((f) => (f.mime === 'application/pdf'
+            ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data }, ...(f.name ? { title: f.name } : {}) }
+            : { type: 'image', source: { type: 'base64', media_type: f.mime, data: f.data } })),
+          { type: 'text', text: req.prompt },
+        ] : req.prompt }],
         output_config: { effort: EFFORT[req.task] },
         // If a request is declined by a safety check, retry on a suitable model inside the same call.
         betas: ['server-side-fallback-2026-07-01'],
@@ -98,7 +112,7 @@ export const PROVIDERS: ProviderDef[] = [
     async run(req, { key, model, signal }) {
       const data = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
         systemInstruction: { parts: [{ text: req.system }] },
-        contents: [{ role: 'user', parts: [{ text: req.prompt }] }],
+        contents: [{ role: 'user', parts: [...(req.files || []).filter((f) => isImage(f.mime) || f.mime === 'application/pdf').map((f) => ({ inlineData: { mimeType: f.mime, data: f.data } })), { text: req.prompt }] }],
         generationConfig: { maxOutputTokens: req.maxTokens ?? MAX[req.task] },
       }, { 'x-goog-api-key': key }, signal);
       return (data.candidates?.[0]?.content?.parts || []).map((p: any) => p.text || '').join('');
@@ -135,4 +149,5 @@ export const AUTO_ORDER: Record<Task, string[]> = {
   ideas: ['claude', 'gemini', 'openai', 'grok', 'workers'],
   svg: ['claude', 'openai', 'gemini', 'grok'],
   module: ['claude', 'openai', 'gemini', 'grok'],
+  design: ['claude', 'gemini', 'openai', 'grok', 'workers'],
 };
