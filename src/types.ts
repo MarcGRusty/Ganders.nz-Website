@@ -13,18 +13,38 @@ export interface Env {
   MOCK_MAIL?: string;   // local testing only: '1' logs email instead of sending
 }
 
+export interface Palette {
+  paper: string;     // page background
+  surface: string;   // cards and panels
+  ink: string;       // main text
+  muted: string;     // secondary text
+  line: string;      // rules and borders
+  accent: string;    // the one strong colour, used sparingly
+  onAccent: string;  // text on the accent
+  accent2: string;   // supporting colour
+}
+
 export interface Theme {
-  paper: string;      // background
-  ink: string;        // main text
-  muted: string;      // secondary text
-  accent: string;     // the one strong colour
-  accent2: string;    // supporting colour
+  preset: string;    // which preset it started from, or a custom id
+  name: string;
+  light: Palette;
+  dark: Palette;
   displayFont: string;
   bodyFont: string;
   monoFont: string;
-  radius: number;     // px
-  maxWidth: number;   // px
+  displayWeight: number;
+  displayWidth: number;   // font-stretch percent, for fonts with a width axis
+  displayItalic: boolean;
+  displayUpper: boolean;
+  radius: number;         // px, 999 = pill
+  border: number;         // px
+  shadow: 'none' | 'hard' | 'soft';
+  texture: 'none' | 'grain' | 'contour' | 'dots';
+  textureStrength: number; // 0 to 1
+  maxWidth: number;       // px
   motion: boolean;
+  mode: 'auto' | 'light' | 'dark'; // what visitors see first
+  toggle: boolean;        // show the light/dark switch to visitors
 }
 
 export interface SiteSettings {
@@ -38,6 +58,7 @@ export interface SiteSettings {
   socials: { label: string; url: string }[];
   footer: string;
   theme: Theme;
+  themes: Theme[];       // custom themes saved in the builder
 }
 
 export type Block = { id: string; type: string; data: Record<string, any> };

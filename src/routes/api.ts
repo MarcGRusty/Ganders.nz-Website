@@ -9,6 +9,7 @@ import peopleRoutes from './people';
 import { ensureSeed, getSettings, saveSettings, listPages, getPageById, listPosts, getPostById, snapshot, slugify } from '../lib/db';
 import { guard, guardDeep } from '../lib/style-guard';
 import { BLOCK_TYPES, newBlock } from '../lib/defaults';
+import { normalizeTheme, PRESETS } from '../lib/themes';
 import { sendMail, mailReady, ownerAddress, fromAddress, wrapHtml, textToHtml } from '../lib/mail';
 
 type Vars = { Bindings: Env; Variables: { uid: number; user: any } };
@@ -80,10 +81,12 @@ api.put('/settings', async (c) => {
   const designOnly = Object.keys(body).every((k) => ['theme', 'themes', 'logo', 'favicon'].includes(k));
   if (!can(c, designOnly ? 'design.edit' : 'settings.edit')) return c.json({ error: 'Your role does not allow this.' }, 403);
   const current = await getSettings(c.env);
-  const next = { ...current, ...body, theme: { ...current.theme, ...(body.theme || {}) } };
+  const next = { ...current, ...body, theme: body.theme ? normalizeTheme({ ...current.theme, ...body.theme }) : current.theme, themes: Array.isArray(body.themes) ? body.themes.slice(0, 30).map(normalizeTheme) : current.themes };
   await saveSettings(c.env, next);
   return c.json(next);
 });
+
+api.get('/themes', (c) => c.json(PRESETS));
 
 // ---------- Blocks ----------
 api.get('/blocks', (c) => c.json(Object.entries(BLOCK_TYPES).map(([type, v]) => ({ type, label: v.label }))));
@@ -312,7 +315,7 @@ api.get('/stats', async (c) => {
 api.post('/preview', async (c) => {
   const b = await c.req.json<{ slug?: string; title?: string; blocks?: any[]; theme?: any; settings?: any; edit?: boolean }>();
   const s = await getSettings(c.env);
-  const settings = { ...s, ...(b.settings || {}), theme: { ...s.theme, ...(b.theme || {}) } };
+  const settings = { ...s, ...(b.settings || {}), theme: b.theme ? normalizeTheme({ ...s.theme, ...b.theme }) : s.theme };
   let blocks = b.blocks;
   if (!blocks) {
     const home = await c.env.DB.prepare("SELECT blocks FROM pages WHERE slug = ?").bind(b.slug || 'home').first<{ blocks: string }>();

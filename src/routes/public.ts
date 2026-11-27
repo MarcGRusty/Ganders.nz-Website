@@ -67,7 +67,7 @@ app.get('/media/:key{.+}', async (c) => {
 app.get('/favicon.svg', async (c) => {
   const s = await getSettings(c.env);
   const letter = esc((s.name || 'G').trim()[0]?.toUpperCase() || 'G');
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="${Math.min(s.theme.radius * 4, 32)}" fill="${esc(s.theme.ink)}"/><text x="32" y="46" text-anchor="middle" font-family="Georgia,serif" font-size="42" fill="${esc(s.theme.paper)}">${letter}</text><circle cx="50" cy="16" r="5" fill="${esc(s.theme.accent)}"/></svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="${Math.min(s.theme.radius * 4, 14)}" fill="${esc(s.theme.light.ink)}"/><text x="32" y="46" text-anchor="middle" font-family="Georgia,serif" font-size="42" fill="${esc(s.theme.light.paper)}">${letter}</text><circle cx="50" cy="16" r="5" fill="${esc(s.theme.light.accent)}"/></svg>`;
   return c.body(svg, 200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=300' });
 });
 app.get('/favicon.ico', async (c) => {

@@ -131,3 +131,23 @@ tr.click:hover td{background:#fff}
   .post-ed{grid-template-columns:1fr 300px}
 }
 @media(min-width:1800px){html{font-size:calc(100% + (100vw - 1800px) / 200)}body{font-size:calc(15px + (100vw - 1800px) / 200)}.editor{grid-template-columns:380px 1fr}}
+
+/* Design: theme picker and builder */
+.tlist{display:grid;gap:10px}
+.tcard{display:grid;gap:10px;padding:12px;border:1px solid var(--line);border-radius:6px;background:var(--card)}
+.tcard.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.sw{display:flex;gap:4px;align-items:center}
+.sw i{width:22px;height:22px;border-radius:3px;border:1px solid rgba(0,0,0,.12);display:block}
+.sw b{width:10px}
+.pal{display:grid;grid-template-columns:1fr;gap:0 12px}
+@media(min-width:520px){.pal{grid-template-columns:1fr 1fr}}
+.pal input[type=color]{width:40px;height:34px;padding:2px;border:1px solid var(--line);border-radius:4px;flex:none}
+.pal input[type=text]{flex:1;min-width:0}
+.checks{display:grid;gap:6px;font-size:13px;margin-top:4px;padding-top:12px;border-top:1px solid var(--line)}
+.checks .ok{color:var(--ok)}.checks .bad{color:var(--danger)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg button{all:unset;cursor:pointer;padding:6px 12px;font:500 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.seg button.on{background:var(--ink);color:var(--paper)}
+.frame{display:flex;flex-direction:column}
+.frame iframe{flex:1;min-height:0}
+.frame > .row{padding:8px 10px;margin:0 !important;border-bottom:1px solid var(--line);background:var(--card)}

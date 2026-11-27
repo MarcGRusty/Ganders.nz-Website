@@ -1,4 +1,5 @@
 import type { Env, Page, Post, SiteSettings } from '../types';
+import { normalizeTheme } from './themes';
 import { DEFAULT_SETTINGS, DEFAULT_HOME, DEFAULT_ABOUT, DEFAULT_CONTACT } from './defaults';
 
 const parsePage = (r: any): Page => ({ ...r, blocks: JSON.parse(r.blocks || '[]'), seo: JSON.parse(r.seo || '{}') });
@@ -8,7 +9,7 @@ export async function getSettings(env: Env): Promise<SiteSettings> {
   const row = await env.DB.prepare("SELECT value FROM settings WHERE key = 'site'").first<{ value: string }>();
   if (!row) return DEFAULT_SETTINGS;
   const saved = JSON.parse(row.value);
-  return { ...DEFAULT_SETTINGS, ...saved, theme: { ...DEFAULT_SETTINGS.theme, ...(saved.theme || {}) } };
+  return { ...DEFAULT_SETTINGS, ...saved, theme: normalizeTheme(saved.theme), themes: Array.isArray(saved.themes) ? saved.themes.slice(0, 30).map(normalizeTheme) : [] };
 }
 
 export async function saveSettings(env: Env, s: SiteSettings) {

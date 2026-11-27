@@ -1,4 +1,5 @@
 import type { SiteSettings, Block } from '../types';
+import { DEFAULT_THEME } from './themes';
 
 // GUESS: placeholder copy until Marc supplies his own. Every line here is editable in the CMS.
 export const DEFAULT_SETTINGS: SiteSettings = {
@@ -11,19 +12,8 @@ export const DEFAULT_SETTINGS: SiteSettings = {
   favicon: null,
   socials: [],
   footer: 'Made in Te Whanganui-a-Tara.',
-  theme: {
-    paper: '#E7EBE8',   // southerly grey, the colour of a Wellington sky before rain
-    ink: '#0E1B22',     // harbour at night
-    muted: '#55646B',
-    accent: '#B9860B',  // kowhai gold
-    accent2: '#1F5F6B', // deep water
-    displayFont: 'Bricolage Grotesque',
-    bodyFont: 'Hanken Grotesk',
-    monoFont: 'IBM Plex Mono',
-    radius: 2,
-    maxWidth: 1120,
-    motion: true,
-  },
+  theme: DEFAULT_THEME,
+  themes: [],
 };
 
 let n = 0;

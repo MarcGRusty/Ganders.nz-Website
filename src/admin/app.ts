@@ -639,50 +639,150 @@ async function viewPostEditor(main: HTMLElement, id: number) {
 
 // ---------- Design ----------
 const FONT_CHOICES = {
-  display: ['Bricolage Grotesque', 'Fraunces', 'Instrument Serif', 'Syne', 'Unbounded', 'DM Serif Display', 'Familjen Grotesk', 'Gloock', 'Young Serif'],
-  body: ['Hanken Grotesk', 'Instrument Sans', 'Figtree', 'Source Serif 4', 'Public Sans', 'Atkinson Hyperlegible', 'Newsreader'],
-  mono: ['IBM Plex Mono', 'JetBrains Mono', 'DM Mono', 'Space Mono', 'Martian Mono'],
+  display: ['Archivo', 'Newsreader', 'Bricolage Grotesque', 'Big Shoulders Display', 'Shrikhand', 'Fraunces', 'Instrument Serif', 'Syne', 'Unbounded', 'DM Serif Display', 'Familjen Grotesk', 'Gloock', 'Young Serif', 'Space Grotesk'],
+  body: ['Atkinson Hyperlegible', 'Newsreader', 'Figtree', 'Geist', 'Work Sans', 'Hanken Grotesk', 'Instrument Sans', 'Source Serif 4', 'Public Sans'],
+  mono: ['IBM Plex Mono', 'JetBrains Mono', 'Geist Mono', 'DM Mono', 'Space Mono', 'Martian Mono'],
 };
+const PAL_FIELDS: [string, string][] = [['paper', 'Background'], ['surface', 'Cards and panels'], ['ink', 'Text'], ['muted', 'Quiet text'], ['line', 'Lines'], ['accent', 'Accent'], ['onAccent', 'Text on accent'], ['accent2', 'Second accent']];
+function lumi(hex: string) {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+const ratio = (a: string, b: string) => { const [x, y] = [lumi(a), lumi(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+const clone = <T,>(o: T): T => JSON.parse(JSON.stringify(o));
+const swatches = (t: Any) => `<div class="sw">${['paper', 'ink', 'accent', 'accent2'].map((k) => `<i style="background:${esc(t.light[k])}"></i>`).join('')}<b></b>${['paper', 'ink', 'accent'].map((k) => `<i style="background:${esc(t.dark[k])}"></i>`).join('')}</div>`;
+
 async function viewDesign(main: HTMLElement) {
-  const s = await api<Any>('GET', '/settings');
-  const t = { ...s.theme };
-  const colour = (k: string, l: string) => `<label class="f"><span>${l}</span><div class="row"><input type="color" data-c="${k}" value="${esc(t[k])}" style="width:44px;height:36px;padding:2px;border:1px solid var(--line);border-radius:4px"><input type="text" data-ct="${k}" value="${esc(t[k])}" style="flex:1;font-family:var(--mono)"></div></label>`;
-  const font = (k: string, l: string, list: string[]) => `<label class="f"><span>${l}</span><select data-font="${k}">${[...new Set([t[k], ...list])].map((f) => `<option ${f === t[k] ? 'selected' : ''}>${esc(f)}</option>`).join('')}<option value="__custom">Another Google font...</option></select></label>`;
-  main.innerHTML = `<div class="head"><div><h1>Design</h1><div class="sub">Colours, type, logo and icon. Changes show in the preview straight away.</div></div><button class="btn" id="save">Save design</button></div>
-    <div class="editor"><div class="blocks">
+  const [s, presets] = await Promise.all([api<Any>('GET', '/settings'), api<Any[]>('GET', '/themes')]);
+  let t: Any = clone(s.theme);
+  let mine: Any[] = clone(s.themes || []);
+  let view: 'light' | 'dark' = 'light';
+  let edited = false;
+  main.innerHTML = `<div class="head"><div><h1>Design</h1><div class="sub">Pick a theme, then make it yours. Changes show in the preview straight away.</div></div>
+    <div class="row"><button class="btn ghost" id="saveas">Save as my theme</button><button class="btn" id="save">Save design</button></div></div>
+    <div class="editor"><div class="blocks" id="dpanels"></div>
+    <div class="frame"><div class="row" style="margin-bottom:8px;justify-content:space-between"><span class="hint mono" id="tname"></span><div class="seg" id="pvmode"><button data-v="light">Light</button><button data-v="dark">Dark</button></div></div><iframe id="pv" title="Design preview"></iframe></div></div>`;
+  const frame = $('#pv') as HTMLIFrameElement;
+  let tm: number | undefined;
+  const refresh = () => {
+    $('#tname').textContent = `${t.name}${edited ? ', edited' : ''}`;
+    main.querySelectorAll<HTMLElement>('#pvmode button').forEach((b) => b.classList.toggle('on', b.dataset.v === view));
+    clearTimeout(tm);
+    tm = window.setTimeout(async () => {
+      const y = frame.contentWindow?.scrollY || 0;
+      frame.srcdoc = (await api<string>('POST', '/preview', { slug: 'home', theme: { ...t, mode: view, toggle: t.toggle }, settings: { logo: s.logo, favicon: s.favicon }, edit: false }))
+        .replace("localStorage.getItem('gmode')", 'null');
+      frame.onload = () => frame.contentWindow?.scrollTo(0, y);
+    }, 250);
+  };
+  const changed = () => { edited = true; refresh(); };
+
+  const checks = () => {
+    const p = t[view];
+    const rows: [string, number, number][] = [['Text on background', ratio(p.ink, p.paper), 7], ['Quiet text on background', ratio(p.muted, p.paper), 4.5], ['Text on accent buttons', ratio(p.onAccent, p.accent), 4.5], ['Accent on background', ratio(p.accent, p.paper), 3]];
+    const warn: string[] = [];
+    if (t.radius >= 16 && t.radius < 999) warn.push('Large rounded corners on everything is one of the strongest template tells.');
+    if (t.shadow === 'soft') warn.push('Soft drop shadows read as generic. Hairlines or a hard offset feel more chosen.');
+    const hue = (() => { const [r, g, b] = [1, 3, 5].map((i) => parseInt(p.accent.slice(i, i + 2), 16)); const mx = Math.max(r, g, b), mn = Math.min(r, g, b); if (mx === mn) return -1; let h = mx === r ? (g - b) / (mx - mn) : mx === g ? 2 + (b - r) / (mx - mn) : 4 + (r - g) / (mx - mn); h *= 60; return h < 0 ? h + 360 : h; })();
+    if (hue >= 245 && hue <= 290) warn.push('Purple and violet accents are the most common AI-made look.');
+    return `<div class="checks">${rows.map(([l, r, min]) => `<div class="row" style="justify-content:space-between"><span>${l}</span><span class="mono ${r >= min ? 'ok' : 'bad'}">${r.toFixed(1)}:1 ${r >= min ? 'good' : r >= min * 0.65 ? 'low' : 'hard to read'}</span></div>`).join('')}
+      ${warn.map((w) => `<p class="hint" style="margin:8px 0 0;color:var(--warn)">${w}</p>`).join('')}</div>`;
+  };
+
+  const fontSel = (k: string, l: string, list: string[]) => `<label class="f"><span>${l}</span><select data-font="${k}">${[...new Set([t[k], ...list])].map((f) => `<option ${f === t[k] ? 'selected' : ''}>${esc(f)}</option>`).join('')}<option value="__custom">Another Google font...</option></select></label>`;
+  const presetCard = (p: Any, own = false) => `<div class="tcard ${t.preset === p.preset ? 'on' : ''}">${swatches(p)}<div><b>${esc(p.name)}</b>${p.blurb ? `<p class="hint" style="margin:4px 0 0">${esc(p.blurb)}</p>` : ''}<p class="hint mono" style="margin:6px 0 0">${esc(p.displayFont)} / ${esc(p.bodyFont)}</p></div>
+    <div class="row"><button class="btn ghost sm" data-use="${esc(p.preset)}" data-own="${own ? 1 : 0}">${t.preset === p.preset ? 'In use' : 'Use'}</button>${own ? `<button class="btn ghost sm" data-delt="${esc(p.preset)}">Delete</button>` : ''}</div></div>`;
+
+  const draw = () => {
+    const p = t[view];
+    $('#dpanels').innerHTML = `
+      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Themes</div><div class="tlist">${presets.map((x) => presetCard(x)).join('')}</div>
+        ${mine.length ? `<div class="mono hint" style="margin:16px 0 10px">Your themes</div><div class="tlist">${mine.map((x) => presetCard(x, true)).join('')}</div>` : ''}</div>
+      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Light and dark</div>
+        <label class="f"><span>Visitors first see</span><select id="mode"><option value="auto" ${t.mode === 'auto' ? 'selected' : ''}>Whatever their phone or computer is set to</option><option value="light" ${t.mode === 'light' ? 'selected' : ''}>Light</option><option value="dark" ${t.mode === 'dark' ? 'selected' : ''}>Dark</option></select></label>
+        <label class="row"><input type="checkbox" id="toggle" ${t.toggle ? 'checked' : ''}> Show a light and dark switch in the header</label></div>
+      <div class="panel"><div class="row" style="justify-content:space-between;margin-bottom:10px"><span class="mono hint">Colour, ${view} version</span><span class="hint">Switch above the preview to edit the other</span></div>
+        <div class="pal">${PAL_FIELDS.map(([k, l]) => `<label class="f"><span>${l}</span><div class="row"><input type="color" data-c="${k}" value="${esc(p[k])}"><input type="text" data-ct="${k}" value="${esc(p[k])}" class="mono"></div></label>`).join('')}</div>
+        <div id="checks">${checks()}</div></div>
+      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Type</div>${fontSel('displayFont', 'Headings', FONT_CHOICES.display)}${fontSel('bodyFont', 'Body text', FONT_CHOICES.body)}${fontSel('monoFont', 'Labels and dates', FONT_CHOICES.mono)}
+        <label class="f"><span>Heading weight: <b data-out="displayWeight">${t.displayWeight}</b></span><input type="range" min="300" max="900" step="100" data-n="displayWeight" value="${t.displayWeight}"></label>
+        <label class="f"><span>Heading width: <b data-out="displayWidth">${t.displayWidth}%</b></span><input type="range" min="75" max="125" step="5" data-n="displayWidth" value="${t.displayWidth}"><small class="hint">Only fonts with a width setting change, such as Archivo.</small></label>
+        <label class="row"><input type="checkbox" data-b="displayUpper" ${t.displayUpper ? 'checked' : ''}> Headings in capitals</label>
+        <label class="row" style="margin-top:8px"><input type="checkbox" data-b="displayItalic" ${t.displayItalic ? 'checked' : ''}> Italic headings</label></div>
+      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Shape, texture and motion</div>
+        <label class="f"><span>Corner roundness: <b data-out="radius">${t.radius >= 999 ? 'pill' : `${t.radius}px`}</b></span><input type="range" min="0" max="25" data-n="radius" value="${Math.min(t.radius, 25)}"><small class="hint">Slide to the end for pill-shaped buttons.</small></label>
+        <label class="f"><span>Line weight: <b data-out="border">${t.border}px</b></span><input type="range" min="0" max="3" data-n="border" value="${t.border}"></label>
+        <label class="f"><span>Shadows</span><select data-s="shadow">${[['none', 'None, just lines'], ['hard', 'Hard offset, like print'], ['soft', 'Soft']].map(([v, l]) => `<option value="${v}" ${t.shadow === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Texture behind page headings</span><select data-s="texture">${[['none', 'None'], ['contour', 'Chart contour rings'], ['dots', 'Pegboard dots'], ['grain', 'Film grain']].map(([v, l]) => `<option value="${v}" ${t.texture === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f"><span>Texture strength: <b data-out="textureStrength">${Math.round(t.textureStrength * 100)}%</b></span><input type="range" min="0" max="1" step="0.05" data-n="textureStrength" value="${t.textureStrength}"></label>
+        <label class="f"><span>Content width: <b data-out="maxWidth">${t.maxWidth}px</b></span><input type="range" min="880" max="1480" step="20" data-n="maxWidth" value="${t.maxWidth}"></label>
+        <label class="row"><input type="checkbox" data-b="motion" ${t.motion ? 'checked' : ''}> Gentle lift as sections scroll in</label></div>
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Logo and icon</div>
         <label class="f"><span>Logo (shown in the header)</span><div id="logo"></div></label>
         <label class="f"><span>Browser icon</span><div id="fav"></div></label>
-        <p class="hint" style="margin:0">No logo? Your name is shown in the display font.</p></div>
-      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Colour</div>${colour('paper', 'Background')}${colour('ink', 'Text')}${colour('muted', 'Quiet text')}${colour('accent', 'Accent')}${colour('accent2', 'Second accent')}</div>
-      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Type</div>${font('displayFont', 'Headings', FONT_CHOICES.display)}${font('bodyFont', 'Body text', FONT_CHOICES.body)}${font('monoFont', 'Labels', FONT_CHOICES.mono)}</div>
-      <div class="panel"><div class="mono hint" style="margin-bottom:10px">Shape and motion</div>
-        <label class="f"><span>Corner roundness: <b id="rv">${t.radius}px</b></span><input type="range" min="0" max="24" data-n="radius" value="${t.radius}"></label>
-        <label class="f"><span>Content width: <b id="wv">${t.maxWidth}px</b></span><input type="range" min="880" max="1480" step="20" data-n="maxWidth" value="${t.maxWidth}"></label>
-        <label class="row"><input type="checkbox" id="motion" ${t.motion ? 'checked' : ''}> Gentle fade-in as you scroll</label></div>
-    </div><div class="frame"><iframe id="pv" title="Design preview"></iframe></div></div>`;
-  const frame = $('#pv') as HTMLIFrameElement;
-  let tm: number | undefined;
-  const refresh = () => { clearTimeout(tm); tm = window.setTimeout(async () => { const y = frame.contentWindow?.scrollY || 0; frame.srcdoc = await api('POST', '/preview', { slug: 'home', theme: t, settings: { logo: s.logo, favicon: s.favicon }, edit: false }); frame.onload = () => frame.contentWindow?.scrollTo(0, y); }, 250); };
-  main.querySelectorAll<HTMLInputElement>('[data-c]').forEach((i) => i.addEventListener('input', () => { t[i.dataset.c!] = i.value; ($(`[data-ct="${i.dataset.c}"]`) as HTMLInputElement).value = i.value; refresh(); }));
-  main.querySelectorAll<HTMLInputElement>('[data-ct]').forEach((i) => i.addEventListener('change', () => { if (/^#[0-9a-f]{6}$/i.test(i.value)) { t[i.dataset.ct!] = i.value; ($(`[data-c="${i.dataset.ct}"]`) as HTMLInputElement).value = i.value; refresh(); } }));
-  main.querySelectorAll<HTMLSelectElement>('[data-font]').forEach((sel) => sel.addEventListener('change', () => {
-    if (sel.value !== '__custom') { t[sel.dataset.font!] = sel.value; return refresh(); }
-    const m = modal('Use another Google font', `<form><label class="f"><span>Font name exactly as on fonts.google.com</span><input type="text" id="cf" placeholder="e.g. Space Grotesk" required></label><button class="btn">Use it</button></form>`);
-    m.el.querySelector('form')!.addEventListener('submit', (e) => { e.preventDefault(); const v = ($('#cf') as HTMLInputElement).value.trim(); if (v) { t[sel.dataset.font!] = v; sel.insertAdjacentHTML('afterbegin', `<option selected>${esc(v)}</option>`); refresh(); } m.close(); });
-  }));
-  main.querySelectorAll<HTMLInputElement>('[data-n]').forEach((i) => i.addEventListener('input', () => { t[i.dataset.n!] = Number(i.value); $(i.dataset.n === 'radius' ? '#rv' : '#wv').textContent = `${i.value}px`; refresh(); }));
-  ($('#motion') as HTMLInputElement).addEventListener('change', (e) => { t.motion = (e.target as HTMLInputElement).checked; });
+        <p class="hint" style="margin:0">No logo? Your name is shown in the heading font.</p></div>`;
+    bind();
+  };
+
+  const bind = () => {
+    const root = $('#dpanels');
+    root.querySelectorAll<HTMLElement>('[data-use]').forEach((b) => b.addEventListener('click', () => {
+      const src = (b.dataset.own === '1' ? mine : presets).find((x) => x.preset === b.dataset.use);
+      if (!src) return;
+      const { blurb, ...rest } = clone(src); void blurb;
+      t = { ...rest, mode: t.mode, toggle: t.toggle }; edited = false; draw(); refresh();
+    }));
+    root.querySelectorAll<HTMLElement>('[data-delt]').forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmBox('Delete this theme? Your site keeps its current look.', 'Delete'))) return;
+      mine = mine.filter((x) => x.preset !== b.dataset.delt);
+      try { await api('PUT', '/settings', { themes: mine }); toast('Theme deleted.'); draw(); } catch (e) { fail(e); }
+    }));
+    ($('#mode') as HTMLSelectElement).addEventListener('change', (e) => { t.mode = (e.target as HTMLSelectElement).value; if (t.mode !== 'auto') view = t.mode; draw(); refresh(); });
+    ($('#toggle') as HTMLInputElement).addEventListener('change', (e) => { t.toggle = (e.target as HTMLInputElement).checked; refresh(); });
+    const setColour = (k: string, v: string) => { t[view][k] = v; ($(`[data-c="${k}"]`) as HTMLInputElement).value = v; ($(`[data-ct="${k}"]`) as HTMLInputElement).value = v; $('#checks').innerHTML = checks(); changed(); };
+    root.querySelectorAll<HTMLInputElement>('[data-c]').forEach((i) => i.addEventListener('input', () => setColour(i.dataset.c!, i.value)));
+    root.querySelectorAll<HTMLInputElement>('[data-ct]').forEach((i) => i.addEventListener('change', () => { if (/^#[0-9a-f]{6}$/i.test(i.value)) setColour(i.dataset.ct!, i.value.toUpperCase()); }));
+    root.querySelectorAll<HTMLSelectElement>('[data-font]').forEach((sel) => sel.addEventListener('change', () => {
+      if (sel.value !== '__custom') { t[sel.dataset.font!] = sel.value; return changed(); }
+      const m = modal('Use another Google font', `<form><label class="f"><span>Font name exactly as on fonts.google.com</span><input type="text" id="cf" placeholder="e.g. Space Grotesk" required></label><button class="btn">Use it</button></form>`);
+      m.el.querySelector('form')!.addEventListener('submit', (e) => { e.preventDefault(); const v = ($('#cf') as HTMLInputElement).value.trim(); if (v) { t[sel.dataset.font!] = v; sel.insertAdjacentHTML('afterbegin', `<option selected>${esc(v)}</option>`); changed(); } m.close(); });
+    }));
+    root.querySelectorAll<HTMLInputElement>('[data-n]').forEach((i) => i.addEventListener('input', () => {
+      const k = i.dataset.n!; let v = Number(i.value);
+      if (k === 'radius' && v >= 25) v = 999;
+      t[k] = v;
+      root.querySelector(`[data-out="${k}"]`)!.textContent = k === 'radius' ? (v >= 999 ? 'pill' : `${v}px`) : k === 'textureStrength' ? `${Math.round(v * 100)}%` : k === 'displayWidth' ? `${v}%` : k === 'displayWeight' ? String(v) : `${v}px`;
+      if (k === 'radius') $('#checks').innerHTML = checks();
+      changed();
+    }));
+    root.querySelectorAll<HTMLInputElement>('[data-b]').forEach((i) => i.addEventListener('change', () => { t[i.dataset.b!] = i.checked; changed(); }));
+    root.querySelectorAll<HTMLSelectElement>('[data-s]').forEach((i) => i.addEventListener('change', () => { t[i.dataset.s!] = i.value; $('#checks').innerHTML = checks(); changed(); }));
+    slot('logo', 'logo'); slot('fav', 'favicon');
+  };
+
   const slot = (id: string, key: 'logo' | 'favicon') => {
     const v = s[key];
-    $(`#${id}`).innerHTML = `<div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="height:40px;max-width:160px;object-fit:contain;background:${esc(t.paper)};padding:4px;border:1px solid var(--line);border-radius:3px">` : key === 'favicon' ? '<img src="/favicon.svg" alt="" style="height:32px">' : ''}<button type="button" class="btn ghost sm" data-k="pick">${v ? 'Change' : 'Upload or choose'}</button><button type="button" class="btn ghost sm" data-k="ai">Make with AI</button>${v ? '<button type="button" class="btn ghost sm" data-k="rm">Remove</button>' : ''}</div>${key === 'favicon' && !v ? '<small class="hint">Currently using a generated monogram in your colours.</small>' : ''}`;
+    $(`#${id}`).innerHTML = `<div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="height:40px;max-width:160px;object-fit:contain;background:${esc(t.light.paper)};padding:4px;border:1px solid var(--line);border-radius:3px">` : key === 'favicon' ? '<img src="/favicon.svg" alt="" style="height:32px">' : ''}<button type="button" class="btn ghost sm" data-k="pick">${v ? 'Change' : 'Upload or choose'}</button><button type="button" class="btn ghost sm" data-k="ai">Make with AI</button>${v ? '<button type="button" class="btn ghost sm" data-k="rm">Remove</button>' : ''}</div>${key === 'favicon' && !v ? '<small class="hint">Currently using a generated monogram in your colours.</small>' : ''}`;
     $(`#${id} [data-k="pick"]`).addEventListener('click', () => pickMedia((k) => { s[key] = k; slot(id, key); refresh(); }));
     $(`#${id} [data-k="ai"]`).addEventListener('click', () => aiLogo(key, (k) => { s[key] = k; slot(id, key); refresh(); }));
     $(`#${id} [data-k="rm"]`)?.addEventListener('click', () => { s[key] = null; slot(id, key); refresh(); });
   };
-  slot('logo', 'logo'); slot('fav', 'favicon');
+
+  main.querySelectorAll<HTMLElement>('#pvmode button').forEach((b) => b.addEventListener('click', () => { view = b.dataset.v as 'light' | 'dark'; draw(); refresh(); }));
+  $('#saveas').addEventListener('click', () => {
+    const m = modal('Save as your own theme', `<form><label class="f"><span>Name</span><input type="text" id="tn" required placeholder="e.g. South coast winter" value="${edited ? '' : esc(t.name)}"></label><button class="btn">Save theme</button></form>`);
+    m.el.querySelector('form')!.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const name = noDash(($('#tn') as HTMLInputElement).value.trim()).slice(0, 60);
+      if (!name) return;
+      const id = `custom-${Date.now().toString(36)}`;
+      t = { ...t, preset: id, name }; edited = false;
+      mine = [...mine, clone(t)];
+      try { await api('PUT', '/settings', { theme: t, themes: mine, logo: s.logo, favicon: s.favicon }); toast(`Saved "${name}" and switched the site to it.`); m.close(); draw(); refresh(); } catch (err) { fail(err); }
+    });
+  });
   $('#save').addEventListener('click', async () => { try { await api('PUT', '/settings', { theme: t, logo: s.logo, favicon: s.favicon }); toast('Design saved. It is live.'); } catch (e) { fail(e); } });
-  refresh();
+  draw(); refresh();
 }
 
 // ---------- Site details ----------

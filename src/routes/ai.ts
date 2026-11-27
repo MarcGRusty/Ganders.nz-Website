@@ -87,7 +87,7 @@ ai.post('/logo', need('ai.use', 'design.edit'), async (c) => {
     ? 'A square browser icon, viewBox="0 0 64 64". It must read clearly at 16 by 16 pixels: one bold shape or a monogram, no fine detail, no small text.'
     : `A horizontal wordmark logo for the header, viewBox about 320 by 64, showing the name "${s.name}". Use text set in a system font stack or simple drawn letterforms, plus at most one small mark.`;
   const prompt = `Design an SVG for ${s.name}'s personal website. ${spec}
-Colours available: background ${t.paper}, ink ${t.ink}, accent ${t.accent}, second accent ${t.accent2}.
+Colours available: background ${t.light.paper}, ink ${t.light.ink}, accent ${t.light.accent}, second accent ${t.light.accent2}.
 Brief from Marc: ${b.brief?.trim() || 'Simple, confident, personal. Nothing generic, no swooshes, no globes, no gradients.'}
 Return only one complete <svg> element. No scripts, no external images or fonts, no <style> tags; use attributes.`;
   const options: { svg: string; provider: string; model: string }[] = [];
