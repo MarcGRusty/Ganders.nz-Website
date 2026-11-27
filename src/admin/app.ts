@@ -1409,6 +1409,7 @@ async function viewSocial(main: HTMLElement) {
     if (a) body = `<p style="margin:0"><b>${esc(a.name)}</b></p><p class="hint" style="margin:4px 0 12px">Connected ${ago(a.connected_at)}</p>${r.canManage ? '<button class="btn ghost sm" data-off>Disconnect</button>' : ''}`;
     else if (!r.canManage) body = '<p class="hint" style="margin:0">Not connected. Ask the site owner to connect it.</p>';
     else if (id === 'facebook' || id === 'instagram') body = meta ? `<p class="hint" style="margin:0 0 12px">${id === 'instagram' ? 'Comes with your Facebook Page, if Instagram is a professional account linked to it.' : 'Signs in with Facebook and picks your Page.'}</p><a class="btn sm" href="/api/social/meta/start">Connect with Facebook</a>` : '<p class="hint" style="margin:0">Add your Meta app first, below.</p>';
+    else if (id === 'x' || id === 'linkedin') body = r.apps[id] ? `<p class="hint" style="margin:0 0 12px">${id === 'x' ? 'Signs in with X. Posts text and a link.' : 'Signs in with LinkedIn and posts to your own profile, with a link card.'}</p><a class="btn sm" href="/api/social/oauth/${id}/start">Connect with ${esc(n.label)}</a>` : `<p class="hint" style="margin:0">Add your ${esc(n.label)} app first, below.</p>`;
     else if (id === 'bluesky') body = `<form data-connect="bluesky"><label class="f"><span>Handle</span><input type="text" name="handle" placeholder="you.bsky.social" autocomplete="off" required></label><label class="f"><span>App password</span><input name="password" type="password" autocomplete="off" required></label><details><summary class="hint">Own server</summary><label class="f"><input type="text" name="service" placeholder="https://bsky.social"></label></details><small class="hint">${esc(NET_HELP.bluesky)}</small><div style="margin-top:10px"><button class="btn sm">Connect</button></div></form>`;
     else body = `<form data-connect="mastodon"><label class="f"><span>Your server</span><input type="text" name="instance" placeholder="mastodon.nz" required></label><label class="f"><span>Access token</span><input name="token" type="password" autocomplete="off" required></label><small class="hint">${esc(NET_HELP.mastodon)}</small><div style="margin-top:10px"><button class="btn sm">Connect</button></div></form>`;
     return `<div class="card" data-net="${id}"><div class="row" style="justify-content:space-between;margin-bottom:10px"><b style="font-size:16px">${esc(n.label)}</b><span class="pill ${a ? 'published' : ''}">${a ? 'Connected' : 'Not connected'}</span></div>${body}</div>`;
@@ -1418,14 +1419,20 @@ async function viewSocial(main: HTMLElement) {
     <div class="tabs"><button data-t="share" class="on">Share</button><button data-t="queue">Sent and waiting (${r.queue.length})</button><button data-t="accounts">Accounts</button></div>
     <div id="so-share"></div>
     <div id="so-queue" hidden></div>
-    <div id="so-accounts" hidden><div class="intg-grid">${['facebook', 'instagram', 'bluesky', 'mastodon'].map(netCard).join('')}</div>
+    <div id="so-accounts" hidden><div class="intg-grid">${['facebook', 'instagram', 'x', 'linkedin', 'bluesky', 'mastodon'].map(netCard).join('')}</div>
       ${r.canManage ? `<div class="card" style="margin-top:16px;max-width:720px"><h2 style="margin:0 0 6px;font-size:18px">Meta app (Facebook and Instagram)</h2>
         <p class="hint" style="margin:0 0 14px">Facebook and Instagram only let websites post through an app you own. You can reuse the one from your old site, or make a new one at developers.facebook.com.</p>
         <label class="f"><span>App ID</span><input type="text" id="meta-id" inputmode="numeric" value="${esc(meta?.appId || '')}"></label>
         <label class="f"><span>App secret</span><input id="meta-secret" type="password" autocomplete="off" placeholder="${meta?.hasSecret ? 'Saved. Paste a new one to replace it.' : 'From App settings, Basic'}"></label>
         <details><summary class="hint">Graph API version</summary><label class="f"><input type="text" id="meta-v" value="${esc(meta?.graphVersion || '')}" placeholder="v24.0"></label></details>
         <label class="f"><span>Add this to "Valid OAuth Redirect URIs" in the app's Facebook Login settings</span><input type="text" readonly value="${esc(r.callback)}" style="font-family:var(--mono);font-size:12px" id="meta-cb"></label>
-        <div class="row"><button class="btn sm" id="meta-save">Save</button>${meta ? '<button class="btn danger sm" id="meta-rm">Remove app</button>' : ''}</div></div>` : ''}</div>`;
+        <div class="row"><button class="btn sm" id="meta-save">Save</button>${meta ? '<button class="btn danger sm" id="meta-rm">Remove app</button>' : ''}</div></div>
+      ${['x', 'linkedin'].map((p) => { const a = r.apps[p]; const o = r.oauthApps[p]; return `<div class="card oauth-app" data-app="${p}" style="margin-top:16px;max-width:720px"><h2 style="margin:0 0 6px;font-size:18px">${esc(o.label)} app</h2>
+        <p class="hint" style="margin:0 0 14px">${p === 'x' ? 'X only lets websites post through a developer app, and posting needs X API access (the Free tier allows a small number of posts a month). Make the app at developer.x.com: turn on OAuth 2.0 as a Web App with Read and write permission.' : 'Make an app at linkedin.com/developers (it needs a LinkedIn Page to sit under, any page you manage is fine), then add the products "Sign In with LinkedIn using OpenID Connect" and "Share on LinkedIn".'}</p>
+        <label class="f"><span>${esc(o.idLabel)}</span><input type="text" data-id value="${esc(a?.clientId || '')}" autocomplete="off"></label>
+        <label class="f"><span>${esc(o.secretLabel)}</span><input type="password" data-secret autocomplete="off" placeholder="${a?.hasSecret ? 'Saved. Paste a new one to replace it.' : `From ${esc(o.where)}`}"></label>
+        <label class="f"><span>Add this as ${p === 'x' ? 'the Callback URI' : 'an Authorized redirect URL'} in the app</span><input type="text" readonly value="${esc(r.callbacks[p])}" style="font-family:var(--mono);font-size:12px" data-cb></label>
+        <div class="row"><button class="btn sm" data-save>Save</button>${a ? '<button class="btn danger sm" data-rm>Remove app</button>' : ''}</div></div>`; }).join('')}` : ''}</div>`;
   const tabs = main.querySelectorAll<HTMLElement>('.tabs button');
   const show = (t: string) => { tabs.forEach((b) => b.classList.toggle('on', b.dataset.t === t)); (['share', 'queue', 'accounts'] as const).forEach((k) => { ($(`#so-${k}`) as HTMLElement).hidden = k !== t; }); };
   tabs.forEach((b) => b.addEventListener('click', () => show(b.dataset.t!)));
@@ -1450,6 +1457,14 @@ async function viewSocial(main: HTMLElement) {
   $('#meta-cb')?.addEventListener('focus', (e) => (e.target as HTMLInputElement).select());
   $('#meta-save')?.addEventListener('click', async () => {
     try { await api('PUT', '/social/apps/meta', { appId: ($('#meta-id') as HTMLInputElement).value, appSecret: ($('#meta-secret') as HTMLInputElement).value, graphVersion: ($('#meta-v') as HTMLInputElement).value }); toast('Meta app saved. Now press Connect with Facebook.'); viewSocial(main); } catch (e) { fail(e); }
+  });
+  main.querySelectorAll<HTMLElement>('[data-app]').forEach((card) => {
+    const p = card.dataset.app!; const label = r.oauthApps[p].label;
+    card.querySelector('[data-cb]')!.addEventListener('focus', (e) => (e.target as HTMLInputElement).select());
+    card.querySelector('[data-save]')!.addEventListener('click', async () => {
+      try { await api('PUT', `/social/apps/${p}`, { clientId: (card.querySelector('[data-id]') as HTMLInputElement).value, clientSecret: (card.querySelector('[data-secret]') as HTMLInputElement).value }); toast(`${label} app saved. Now press Connect with ${label}.`); viewSocial(main).then(() => (document.querySelector('.tabs button[data-t=accounts]') as HTMLElement)?.click()); } catch (e) { fail(e); }
+    });
+    card.querySelector('[data-rm]')?.addEventListener('click', async () => { if (await confirmBox(`Remove the ${label} app details? ${label} stops working until you add them again.`, 'Remove')) { await api('PUT', `/social/apps/${p}`, { remove: true }); viewSocial(main); } });
   });
   $('#meta-rm')?.addEventListener('click', async () => { if (await confirmBox('Remove the Meta app details? Facebook and Instagram stop working until you add them again.', 'Remove')) { await api('PUT', '/social/apps/meta', { remove: true }); viewSocial(main); } });
 
@@ -1477,7 +1492,7 @@ async function viewSocial(main: HTMLElement) {
       <label class="f"><span>What to share</span><select id="sh-post"><option value="">Something new (no post)</option>${posts.map((p) => `<option value="${p.id}" ${p.id === preset ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}</select></label>
       <label class="f" id="sh-link-wrap"><span>Link (optional)</span><input type="text" id="sh-link" inputmode="url" placeholder="https://"></label>
       <label class="f" id="sh-text-wrap"><span>What it's about</span><textarea id="sh-text" rows="4" placeholder="A few lines. AI can turn this into a version for each network."></textarea></label>
-      <div class="f"><span>Photos</span><div class="row" id="sh-imgs"></div><small class="hint">Instagram needs at least one JPEG photo. Bluesky takes photos under 1 MB.</small></div>
+      <div class="f"><span>Photos</span><div class="row" id="sh-imgs"></div><small class="hint">Instagram needs at least one JPEG photo. Bluesky takes photos under 1 MB. X and LinkedIn get the text and link, without photos for now.</small></div>
       <div class="f"><span>Send to</span>${connected.map((n: Any) => `<label class="row"><input type="checkbox" data-net-pick="${n.id}" checked> ${esc(n.label)} <span class="hint">(${esc(acct(n.id).name)})</span></label>`).join('')}</div>
       ${can('ai.use') ? `<div class="row" style="margin-top:6px">${await aiPicker('sh-ai')}<button class="btn ghost" id="sh-write">Write a version for each</button></div>` : ''}
     </div>

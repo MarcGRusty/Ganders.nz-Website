@@ -4,13 +4,21 @@ import type { Env } from '../types';
 import { seal, open } from './crypto';
 import { safeUrl, fireEvent } from './integrations';
 
-export type Network = 'facebook' | 'instagram' | 'bluesky' | 'mastodon';
+export type Network = 'facebook' | 'instagram' | 'bluesky' | 'mastodon' | 'x' | 'linkedin';
 export const NETWORKS: { id: Network; label: string; limit: number; needsImage?: boolean }[] = [
   { id: 'facebook', label: 'Facebook Page', limit: 5000 },
   { id: 'instagram', label: 'Instagram', limit: 2200, needsImage: true },
   { id: 'bluesky', label: 'Bluesky', limit: 300 },
   { id: 'mastodon', label: 'Mastodon', limit: 500 },
+  { id: 'x', label: 'X', limit: 280 },
+  { id: 'linkedin', label: 'LinkedIn', limit: 3000 },
 ];
+
+/** Networks that sign in through an app Marc owns (client id and secret saved in Studio). */
+export const OAUTH_APPS: Record<string, { label: string; idLabel: string; secretLabel: string; where: string }> = {
+  x: { label: 'X', idLabel: 'Client ID', secretLabel: 'Client secret', where: 'developer.x.com, your app, Keys and tokens, OAuth 2.0 Client ID and Client Secret' },
+  linkedin: { label: 'LinkedIn', idLabel: 'Client ID', secretLabel: 'Primary client secret', where: 'linkedin.com/developers, your app, Auth tab' },
+};
 
 export interface Image { key: string; url: string; alt?: string }
 interface Account { network: Network; name: string; ref: string; enc_token: string; meta: string }
@@ -211,9 +219,92 @@ async function sendMastodon(env: Env, q: Queued, images: Image[]) {
   return r.url as string;
 }
 
+// ---------- X and LinkedIn (OAuth 2.0 apps) ----------
+async function oauthApp(env: Env, provider: 'x' | 'linkedin') {
+  const app = await getApp(env, provider);
+  if (!app?.clientId || !app?.clientSecret) throw new Error(`Add your ${OAUTH_APPS[provider].label} app details first.`);
+  return app as { clientId: string; clientSecret: string };
+}
+const b64url = (u: Uint8Array) => btoa(String.fromCharCode(...u)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+/** The sign-in address, plus the PKCE verifier to keep until the callback (X needs it). */
+export async function oauthStart(env: Env, provider: 'x' | 'linkedin', redirect: string, state: string) {
+  const app = await oauthApp(env, provider);
+  if (provider === 'linkedin') {
+    return { verifier: '', url: `https://www.linkedin.com/oauth/v2/authorization?${new URLSearchParams({ response_type: 'code', client_id: app.clientId, redirect_uri: redirect, state, scope: 'openid profile w_member_social' })}` };
+  }
+  const verifier = b64url(crypto.getRandomValues(new Uint8Array(48)));
+  const challenge = b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
+  const q = new URLSearchParams({ response_type: 'code', client_id: app.clientId, redirect_uri: redirect, scope: 'tweet.read tweet.write users.read offline.access', state, code_challenge: challenge, code_challenge_method: 'S256' });
+  return { verifier, url: `https://x.com/i/oauth2/authorize?${q.toString().replace(/\+/g, '%20')}` };
+}
+
+const xBasic = (app: { clientId: string; clientSecret: string }) => `Basic ${btoa(`${encodeURIComponent(app.clientId)}:${encodeURIComponent(app.clientSecret)}`)}`;
+const expiresAt = (secs: unknown) => (Number(secs) ? new Date(Date.now() + Number(secs) * 1000).toISOString() : '');
+
+export async function oauthConnect(env: Env, provider: 'x' | 'linkedin', code: string, redirect: string, verifier: string) {
+  const app = await oauthApp(env, provider);
+  if (provider === 'linkedin') {
+    const t = await req('https://www.linkedin.com/oauth/v2/accessToken', { method: 'POST', body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirect, client_id: app.clientId, client_secret: app.clientSecret }) }, 'LinkedIn');
+    const me = await req('https://api.linkedin.com/v2/userinfo', { headers: { authorization: `Bearer ${t.access_token}` } }, 'LinkedIn');
+    if (!me.sub) throw new Error('LinkedIn did not say who you are. Check the app has "Sign In with LinkedIn using OpenID Connect".');
+    await saveAccount(env, 'linkedin', me.name || 'LinkedIn', `urn:li:person:${me.sub}`, t.access_token, { expires: expiresAt(t.expires_in) });
+    return me.name || 'LinkedIn';
+  }
+  const t = await req('https://api.x.com/2/oauth2/token', { method: 'POST', headers: { authorization: xBasic(app) }, body: new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: redirect, code_verifier: verifier, client_id: app.clientId }) }, 'X');
+  const me = await req('https://api.x.com/2/users/me', { headers: { authorization: `Bearer ${t.access_token}` } }, 'X');
+  const username = me.data?.username || 'x';
+  await saveAccount(env, 'x', `@${username}`, String(me.data?.id || ''), t.access_token, { username, refresh: t.refresh_token || '', expires: expiresAt(t.expires_in || 7200) });
+  return `@${username}`;
+}
+
+/** X tokens last two hours. Refresh when close, and save the new refresh token straight away (X rotates them). */
+async function xToken(env: Env) {
+  const a = await account(env, 'x');
+  if (a.meta.expires && Date.parse(a.meta.expires) > Date.now() + 120_000) return a;
+  if (!a.meta.refresh) throw new Error('The X connection expired. Connect it again.');
+  const app = await oauthApp(env, 'x');
+  const t = await req('https://api.x.com/2/oauth2/token', { method: 'POST', headers: { authorization: xBasic(app) }, body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: a.meta.refresh, client_id: app.clientId }) }, 'X');
+  const meta: Record<string, string> = { ...a.meta, refresh: t.refresh_token || a.meta.refresh, expires: expiresAt(t.expires_in || 7200) };
+  await saveAccount(env, 'x', a.name, a.ref, t.access_token, meta);
+  return { ...a, token: t.access_token as string, meta };
+}
+
+async function sendX(env: Env, q: Queued) {
+  const a = await xToken(env);
+  const text = q.link && !q.body.includes(q.link) ? `${q.body}\n\n${q.link}` : q.body;
+  const r = await req('https://api.x.com/2/tweets', { method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' }, body: JSON.stringify({ text }) }, 'X');
+  return `https://x.com/${a.meta.username || 'i'}/status/${r.data?.id}`;
+}
+
+/** LinkedIn's post text treats these characters as markup, so they are escaped to post as written. */
+export const linkedinText = (t: string) => t.replace(/([\\|{}@\[\]()<>#*_~])/g, '\\$1');
+
+async function sendLinkedIn(env: Env, q: Queued) {
+  const a = await account(env, 'linkedin');
+  if (a.meta.expires && Date.parse(a.meta.expires) < Date.now()) throw new Error('The LinkedIn connection expired (they last 60 days). Connect it again.');
+  const body: any = {
+    author: a.ref, commentary: linkedinText(q.body), visibility: 'PUBLIC', lifecycleState: 'PUBLISHED', isReshareDisabledByAuthor: false,
+    distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] },
+  };
+  if (q.link) body.content = { article: { source: q.link, title: q.link.replace(/^https?:\/\//, '').slice(0, 200) } };
+  if (q.post_id) {
+    const p = await env.DB.prepare('SELECT title FROM posts WHERE id = ?').bind(q.post_id).first<{ title: string }>();
+    if (p && body.content) body.content.article.title = p.title.slice(0, 200);
+  }
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 30_000);
+  try {
+    const r = await fetch('https://api.linkedin.com/rest/posts', { method: 'POST', signal: ctl.signal, headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json', 'LinkedIn-Version': '202509', 'X-Restli-Protocol-Version': '2.0.0' }, body: JSON.stringify(body) });
+    if (r.status !== 201) { const j: any = await r.json().catch(() => ({})); throw new Error(`LinkedIn said: ${j.message || r.status}`); }
+    const urn = r.headers.get('x-restli-id') || '';
+    return urn ? `https://www.linkedin.com/feed/update/${urn}/` : 'https://www.linkedin.com/feed/';
+  } catch (e) { if (ctl.signal.aborted) throw new Error('LinkedIn took too long to answer.'); throw e; } finally { clearTimeout(t); }
+}
+
 // ---------- Queue ----------
 const SENDERS: Record<Network, (env: Env, q: Queued, images: Image[]) => Promise<string>> = {
-  facebook: sendFacebook, instagram: sendInstagram, bluesky: sendBluesky, mastodon: sendMastodon,
+  facebook: sendFacebook, instagram: sendInstagram, bluesky: sendBluesky, mastodon: sendMastodon, x: sendX, linkedin: sendLinkedIn,
 };
 
 /** Send whatever is due (or one batch). Each row is claimed first so two runs never double-post. */
@@ -230,7 +321,7 @@ export async function processQueue(env: Env, batch?: string) {
     } catch (e) {
       const msg = (e as Error).message.slice(0, 500);
       // Retry twice, 10 then 20 minutes later, unless the problem needs a person to fix it.
-      const fixable = /not connected|Connect it again|Add your Meta|only takes JPEG|needs at least one photo|said: .*(token|permission|OAuth)/i.test(msg);
+      const fixable = /not connected|Connect it again|Add your|expired|only takes JPEG|needs at least one photo|said: .*(token|permission|OAuth)/i.test(msg);
       const retry = q.tries + 1 < 3 && !fixable;
       await env.DB.prepare(`UPDATE social_posts SET status = ?, error = ?, send_at = ${retry ? "datetime('now', ?)" : 'send_at'} WHERE id = ?`)
         .bind(...(retry ? ['queued', msg, `+${(q.tries + 1) * 10} minutes`, q.id] : ['failed', msg, q.id])).run();

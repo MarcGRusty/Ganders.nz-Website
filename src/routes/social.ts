@@ -5,26 +5,28 @@ import { need, can, audit } from '../lib/auth';
 import { generate, extractJson } from '../ai/router';
 import { stripDashes } from '../lib/style-guard';
 import { getPostById } from '../lib/db';
-import { NETWORKS, getApp, saveApp, saveAccount, metaAuthorizeUrl, metaConnect, blueskyLogin, mastodonCheck, processQueue, type Network, type Image } from '../lib/social';
+import { NETWORKS, OAUTH_APPS, oauthStart, oauthConnect, getApp, saveApp, saveAccount, metaAuthorizeUrl, metaConnect, blueskyLogin, mastodonCheck, processQueue, type Network, type Image } from '../lib/social';
 
 type Vars = { Bindings: Env; Variables: { uid: number; user: any } };
 const r = new Hono<Vars>();
 
 const origin = (c: any) => new URL(c.req.url).origin;
-const callback = (c: any) => `${origin(c)}/api/social/meta/callback`;
+const callback = (c: any, p = 'meta') => `${origin(c)}/api/social/${p === 'meta' ? 'meta' : `oauth/${p}`}/callback`;
 const isNet = (n: unknown): n is Network => NETWORKS.some((x) => x.id === n);
 const textOf = (html: string) => html.replace(/<\/(p|h\d|li|blockquote)>/gi, '\n\n').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\n{3,}/g, '\n\n').trim();
 
 r.get('/', need('social.post'), async (c) => {
-  const [{ results: accounts }, { results: queue }, meta] = await Promise.all([
+  const [{ results: accounts }, { results: queue }, meta, x, linkedin] = await Promise.all([
     c.env.DB.prepare('SELECT network, name, ref, connected_at FROM social_accounts').all(),
     c.env.DB.prepare('SELECT s.id, s.batch, s.post_id, s.network, s.body, s.link, s.images, s.status, s.send_at, s.tries, s.result_url, s.error, s.created_at, s.sent_at, p.title AS post_title FROM social_posts s LEFT JOIN posts p ON p.id = s.post_id ORDER BY s.id DESC LIMIT 60').all(),
-    getApp(c.env, 'meta'),
+    getApp(c.env, 'meta'), getApp(c.env, 'x'), getApp(c.env, 'linkedin'),
   ]);
+  const oauth = (a: Record<string, string> | null) => (a ? { clientId: a.clientId, hasSecret: !!a.clientSecret } : null);
   return c.json({
     networks: NETWORKS, accounts, queue: queue.map((q: any) => ({ ...q, images: JSON.parse(q.images || '[]') })),
-    apps: { meta: meta ? { appId: meta.appId, hasSecret: !!meta.appSecret, graphVersion: meta.graphVersion || '' } : null },
-    callback: callback(c), canManage: can(c, 'integrations.manage'), canStoreKeys: !!c.env.APP_KEY,
+    apps: { meta: meta ? { appId: meta.appId, hasSecret: !!meta.appSecret, graphVersion: meta.graphVersion || '' } : null, x: oauth(x), linkedin: oauth(linkedin) },
+    oauthApps: OAUTH_APPS,
+    callback: callback(c), callbacks: { x: callback(c, 'x'), linkedin: callback(c, 'linkedin') }, canManage: can(c, 'integrations.manage'), canStoreKeys: !!c.env.APP_KEY,
   });
 });
 
@@ -62,6 +64,51 @@ r.get('/meta/callback', need('integrations.manage'), async (c) => {
     const res = await metaConnect(c.env, c.req.query('code') || '', callback(c));
     await audit(c, 'social.connect', res.names.join(' + '));
     return back(`connected=${encodeURIComponent(res.names.join(' and '))}${res.instagram ? '' : '&noig=1'}`);
+  } catch (e) { return back(`error=${encodeURIComponent((e as Error).message)}`); }
+});
+
+// ---------- X and LinkedIn ----------
+const isOauth = (p: string): p is 'x' | 'linkedin' => p === 'x' || p === 'linkedin';
+
+r.put('/apps/:provider{(x|linkedin)}', need('integrations.manage'), async (c) => {
+  const provider = c.req.param('provider') as 'x' | 'linkedin';
+  if (!c.env.APP_KEY) return c.json({ error: 'Keys cannot be saved until the APP_KEY secret is set.' }, 400);
+  const b = await c.req.json<{ clientId?: string; clientSecret?: string; remove?: boolean }>();
+  if (b.remove) { await saveApp(c.env, provider, null); await audit(c, 'social.app.remove', provider); return c.json({ ok: true }); }
+  const cur = await getApp(c.env, provider);
+  const clientId = String(b.clientId ?? cur?.clientId ?? '').trim();
+  const clientSecret = String(b.clientSecret || '').trim() || cur?.clientSecret || '';
+  if (!/^[\w.-]{6,120}$/.test(clientId)) return c.json({ error: `Paste the ${OAUTH_APPS[provider].idLabel}. It is under ${OAUTH_APPS[provider].where}.` }, 400);
+  if (!clientSecret) return c.json({ error: `Add the ${OAUTH_APPS[provider].secretLabel} too.` }, 400);
+  await saveApp(c.env, provider, { clientId, clientSecret });
+  await audit(c, 'social.app.save', provider);
+  return c.json({ ok: true });
+});
+
+r.get('/oauth/:provider{(x|linkedin)}/start', need('integrations.manage'), async (c) => {
+  const provider = c.req.param('provider') || '';
+  if (!isOauth(provider)) return c.notFound();
+  const state = crypto.randomUUID();
+  try {
+    const s = await oauthStart(c.env, provider, callback(c, provider), state);
+    await c.env.KV.put(`oauth:${provider}:${state}`, JSON.stringify({ uid: String(c.get('uid')), verifier: s.verifier }), { expirationTtl: 600 });
+    return c.redirect(s.url, 302);
+  } catch (e) { return c.redirect(`/admin/social?error=${encodeURIComponent((e as Error).message)}`, 302); }
+});
+
+r.get('/oauth/:provider{(x|linkedin)}/callback', need('integrations.manage'), async (c) => {
+  const provider = c.req.param('provider') || '';
+  if (!isOauth(provider)) return c.notFound();
+  const back = (q: string) => c.redirect(`/admin/social?${q}`, 302);
+  const state = c.req.query('state') || '';
+  const saved = state ? await c.env.KV.get<{ uid: string; verifier: string }>(`oauth:${provider}:${state}`, 'json') : null;
+  if (state) await c.env.KV.delete(`oauth:${provider}:${state}`);
+  if (!saved || saved.uid !== String(c.get('uid'))) return back(`error=${encodeURIComponent('That sign-in link expired. Try Connect again.')}`);
+  if (c.req.query('error')) return back(`error=${encodeURIComponent(c.req.query('error_description') || `${OAUTH_APPS[provider].label} sign-in was cancelled.`)}`);
+  try {
+    const name = await oauthConnect(c.env, provider, c.req.query('code') || '', callback(c, provider), saved.verifier);
+    await audit(c, 'social.connect', `${provider} ${name}`);
+    return back(`connected=${encodeURIComponent(`${name} on ${OAUTH_APPS[provider].label}`)}`);
   } catch (e) { return back(`error=${encodeURIComponent((e as Error).message)}`); }
 });
 
@@ -114,6 +161,8 @@ r.post('/write', need('social.post', 'ai.use'), async (c) => {
     if (n.id === 'instagram') return `- instagram: up to 900 characters, a caption to sit under a photo. No web addresses (they do not work there). No hashtags.`;
     if (n.id === 'bluesky') return `- bluesky: under 260 characters (a link is added separately). Plain, conversational.`;
     if (n.id === 'mastodon') return `- mastodon: under 420 characters (a link is added separately). Friendly and plain.`;
+    if (n.id === 'x') return `- x: under 240 characters (a link is added separately). One clear thought, no thread, no hashtags.`;
+    if (n.id === 'linkedin') return `- linkedin: 3 to 6 short paragraphs, first person, a practical takeaway, professional but still Marc. No hashtags, no "I'm excited to share", no one-line-per-sentence broetry.`;
     return `- facebook: 1 to 3 short paragraphs, warm and personal. The link is added separately.`;
   }).join('\n');
   try {
@@ -139,6 +188,8 @@ r.post('/share', need('social.post'), async (c) => {
   for (const i of items) {
     const n = NETWORKS.find((x) => x.id === i.network)!;
     if (i.body.length > n.limit) return c.json({ error: `${n.label} allows ${n.limit} characters. That version has ${i.body.length}.` }, 400);
+    // X counts any link as 23 characters, plus the blank line before it.
+    if (n.id === 'x' && (b.post_id || b.link) && i.body.length > 255) return c.json({ error: `With the link added, X allows 255 characters of text. That version has ${i.body.length}.` }, 400);
   }
   let link = '';
   if (b.post_id) {

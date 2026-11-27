@@ -105,3 +105,10 @@ describe('bluesky link facets', () => {
     expect(new TextDecoder().decode(bytes.slice(f.index.byteStart, f.index.byteEnd))).toBe('https://ganders.nz/writing/x');
   });
 });
+
+describe('linkedin text', () => {
+  it('escapes LinkedIn markup characters', async () => {
+    const { linkedinText } = await import('../src/lib/social');
+    expect(linkedinText('Hi (team) #1 @marc')).toBe('Hi \\(team\\) \\#1 \\@marc');
+  });
+});
