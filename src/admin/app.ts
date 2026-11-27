@@ -105,7 +105,7 @@ const NAV: [string, string, string, string?][] = [
   ['/admin/settings', 'Site details', 'settings.edit'],
   ['/admin/messages', 'Inbox', 'messages.view'],
   ['/admin/ai', 'AI providers', 'ai.manage'],
-  ['/admin/ideas', 'Create Ideas', 'ideas.use', 'Soon'],
+  ['/admin/ideas', 'Create Ideas', 'ideas.use'],
   ['/admin/social', 'Social', 'social.post', 'Soon'],
   ['/admin/integrations', 'Integrations', 'integrations.manage', 'Soon'],
   ['/admin/modules', 'Modules', 'modules.manage', 'Soon'],
@@ -147,6 +147,8 @@ async function route() {
     if (path === '/admin/media') return await viewMedia(main);
     if (path === '/admin/design') return await viewDesign(main);
     if (path === '/admin/settings') return await viewSettings(main);
+    if (path === '/admin/ideas') return await viewIdeas(main);
+    if (path === '/admin/knowledge') return await viewIdeas(main, 'kb');
     if (path === '/admin/messages') return await viewMessages(main);
     r = m(/^\/admin\/messages\/(\d+)$/); if (r) return await viewMessage(main, Number(r[1]));
     if (path === '/admin/ai') return await viewAi(main);
@@ -992,6 +994,108 @@ async function mailSettings() {
   });
 }
 
+
+// ---------- Create Ideas and the knowledge base ----------
+async function viewIdeas(main: HTMLElement, tab: 'ideas' | 'kb' = 'ideas') {
+  main.innerHTML = `<div class="head"><div><h1>Create Ideas</h1><div class="sub">Your own notes, documents and links become post ideas. Drafts wait for you in review. Nothing goes live without you.</div></div></div>
+    <div class="tabs"><button data-t="ideas" class="${tab === 'ideas' ? 'on' : ''}">Ideas and review</button><button data-t="kb" class="${tab === 'kb' ? 'on' : ''}">Knowledge base</button></div><div id="ix"></div>`;
+  main.querySelectorAll<HTMLElement>('.tabs button').forEach((b) => b.addEventListener('click', () => { history.replaceState({}, '', b.dataset.t === 'kb' ? '/admin/knowledge' : '/admin/ideas'); viewIdeas(main, b.dataset.t as 'ideas' | 'kb'); }));
+  const box = $('#ix');
+  if (tab === 'kb') return viewKnowledge(box);
+
+  const r = await api<Any>('GET', '/ideas');
+  const ideasList = r.items.filter((x: Any) => x.status === 'idea');
+  const review = r.items.filter((x: Any) => x.status === 'review');
+  box.innerHTML = `<div class="card" style="margin-bottom:20px"><div class="grid" style="gap:12px">
+      <label class="f" style="margin:0"><span>Topic (optional)</span><input type="text" id="ci-topic" placeholder="Leave empty for a spread, or try: small business security, Thai cooking"></label>
+      <div class="row"><select id="ci-count" aria-label="How many" style="width:auto"><option value="3">3 ideas</option><option value="5" selected>5 ideas</option><option value="8">8 ideas</option></select><span id="ci-pick"></span><button class="btn" id="ci-go">Create ideas</button></div>
+      <p class="hint" style="margin:0">Drawing on ${r.knowledge.active} item${r.knowledge.active === 1 ? '' : 's'} in your <a href="/admin/knowledge" data-link>knowledge base</a>${r.knowledge.active ? '' : '. Add some notes or links first for ideas only you could write'}.</p></div></div>
+    <h2 class="sec-t">Ready for review <span class="hint">${review.length}</span></h2>
+    ${review.length ? `<div class="grid" style="gap:10px;margin-bottom:28px">${review.map((p: Any) => `<div class="card idea"><div><b>${esc(p.title)}</b><p class="hint" style="margin:4px 0 0">${esc(p.excerpt || '')}</p>
+      ${p.meta?.drafted ? `<p class="mono hint" style="margin:6px 0 0">Drafted by ${esc(providerLabel(p.meta.drafted.provider))} ${ago(p.meta.drafted.at)}</p>` : ''}</div>
+      <div class="row"><a class="btn sm" href="/admin/writing/${p.id}" data-link>Review and edit</a>${can('posts.publish') ? `<button class="btn ghost sm" data-pub="${p.id}">Publish now</button>` : ''}<button class="btn ghost sm" data-back="${p.id}">Back to ideas</button></div></div>`).join('')}</div>` : '<p class="hint" style="margin:0 0 28px">Drafts you ask for land here first.</p>'}
+    <h2 class="sec-t">Ideas <span class="hint">${ideasList.length}</span></h2>
+    <div id="ci-out" class="grid" style="gap:10px">${ideasList.length ? ideasList.map(ideaCard).join('') : '<p class="hint">No ideas yet. Press Create ideas above.</p>'}</div>`;
+  aiPicker('ci-ai').then((h) => { const el = $('#ci-pick'); if (el) el.innerHTML = h; }).catch(() => { const el = $('#ci-pick'); if (el) el.innerHTML = '<a class="mono hint" href="/admin/ai" data-link>Set up AI</a>'; });
+  const choice = () => ($('#ci-ai') as HTMLSelectElement | null)?.value;
+  $('#ci-go').addEventListener('click', async (e) => {
+    await busy(e.currentTarget as HTMLButtonElement, 'Thinking...', async () => {
+      try {
+        const out = await api<Any>('POST', '/ideas/create', { topic: ($('#ci-topic') as HTMLInputElement).value, count: Number(($('#ci-count') as HTMLSelectElement).value), choice: choice() });
+        toast(`${out.items.length} new idea${out.items.length === 1 ? '' : 's'} from ${providerLabel(out.provider)}.`);
+        viewIdeas(main);
+      } catch (err) { fail(err); }
+    });
+  });
+  box.querySelectorAll<HTMLElement>('[data-draft]').forEach((b) => b.addEventListener('click', async () => {
+    await busy(b as HTMLButtonElement, 'Writing...', async () => {
+      try { const out = await api<Any>('POST', `/ideas/${b.dataset.draft}/draft`, { choice: choice() }); toast(`Draft ready for review${out.flags?.length ? `. Check: ${out.flags.join(', ')}` : ''}.`); viewIdeas(main); } catch (err) { fail(err); }
+    });
+  }));
+  box.querySelectorAll<HTMLElement>('[data-dismiss]').forEach((b) => b.addEventListener('click', async () => { if (await confirmBox('Remove this idea?', 'Remove')) { await api('DELETE', `/posts/${b.dataset.dismiss}`); viewIdeas(main); } }));
+  box.querySelectorAll<HTMLElement>('[data-pub]').forEach((b) => b.addEventListener('click', async () => { if (await confirmBox('Publish this post on your site now?', 'Publish')) { try { await api('PUT', `/posts/${b.dataset.pub}`, { status: 'published' }); toast('Published.'); viewIdeas(main); } catch (e) { fail(e); } } }));
+  box.querySelectorAll<HTMLElement>('[data-back]').forEach((b) => b.addEventListener('click', async () => { try { await api('PUT', `/posts/${b.dataset.back}`, { status: 'idea' }); viewIdeas(main); } catch (e) { fail(e); } }));
+}
+
+function ideaCard(p: Any) {
+  const m = p.meta || {};
+  return `<div class="card idea"><div><b>${esc(p.title)}</b><p style="margin:4px 0 0">${esc(p.excerpt || '')}</p>
+    ${m.outline?.length ? `<ul class="hint" style="margin:8px 0 0;padding-left:18px">${m.outline.map((o: string) => `<li>${esc(o)}</li>`).join('')}</ul>` : ''}
+    ${m.why ? `<p class="hint" style="margin:8px 0 0"><i>${esc(m.why)}</i></p>` : ''}
+    ${m.sources?.length ? `<p class="mono hint" style="margin:6px 0 0">From your notes: ${m.sources.map((n: number) => `<a href="/admin/knowledge#k${n}" data-link>K${n}</a>`).join(', ')}</p>` : ''}</div>
+    <div class="row"><button class="btn sm" data-draft="${p.id}">Write a draft</button><a class="btn ghost sm" href="/admin/writing/${p.id}" data-link>Write it myself</a>${can('posts.delete') ? `<button class="btn ghost sm" data-dismiss="${p.id}">Remove</button>` : ''}</div></div>`;
+}
+
+async function viewKnowledge(box: HTMLElement) {
+  const items = await api<Any[]>('GET', '/knowledge');
+  const total = items.filter((k) => k.active).reduce((n, k) => n + (k.chars || 0), 0);
+  box.innerHTML = `<div class="grid kb-add" style="gap:12px;margin-bottom:20px">
+      <div class="card"><div class="mono hint" style="margin-bottom:8px">Write a note</div>
+        <input type="text" id="kn-title" placeholder="Title (optional)" style="margin-bottom:8px"><textarea id="kn-body" rows="5" placeholder="Stories, opinions, lessons, lists of things you know well. Rough is fine."></textarea>
+        <button class="btn sm" id="kn-save" style="margin-top:8px">Add note</button></div>
+      <div class="card"><div class="mono hint" style="margin-bottom:8px">Add from the web</div>
+        <textarea id="ku-urls" rows="3" placeholder="Links to your own articles, talks, LinkedIn posts or pages you often point people to. One per line."></textarea>
+        <button class="btn sm" id="ku-save" style="margin-top:8px">Read these pages</button>
+        <div class="mono hint" style="margin:16px 0 8px">Or add files</div><div class="drop" id="kf-drop" style="padding:16px">Drop text, Markdown or PDF files here</div></div>
+    </div>
+    <p class="hint">${items.length} item${items.length === 1 ? '' : 's'}, about ${Math.round(total / 5.5).toLocaleString('en-NZ')} words switched on. Switch an item off to keep it out of ideas without deleting it.</p>
+    ${items.length ? `<div class="card" style="padding:0;overflow-x:auto"><table><thead><tr><th>Item</th><th>Type</th><th>Use</th><th>Added</th><th></th></tr></thead><tbody>
+      ${items.map((k) => `<tr id="k${k.id}"><td class="click" data-open="${k.id}"><b>${esc(k.title)}</b><div class="hint">${esc((k.snippet || (k.file_key ? 'PDF, read directly by AI services that can' : '')).slice(0, 140))}</div></td>
+        <td class="mono hint">${k.kind === 'url' ? 'web' : k.file_key ? 'pdf' : k.kind}</td><td><input type="checkbox" data-on="${k.id}" ${k.active ? 'checked' : ''} aria-label="Use in ideas"></td><td class="hint">${ago(k.created_at)}</td>
+        <td><button class="btn ghost sm" data-del="${k.id}">Delete</button></td></tr>`).join('')}</tbody></table></div>` : ''}`;
+  const reload = () => viewKnowledge(box);
+  const noteBody = $('#kn-body') as HTMLTextAreaElement;
+  noteBody.addEventListener('input', () => { const v = noDash(noteBody.value); if (v !== noteBody.value) { const p = noteBody.selectionStart; noteBody.value = v; noteBody.selectionStart = noteBody.selectionEnd = Math.max(0, p - 1); } });
+  $('#kn-save').addEventListener('click', async () => {
+    try { await api('POST', '/knowledge', { kind: 'note', title: ($('#kn-title') as HTMLInputElement).value, body: noteBody.value }); toast('Note added.'); reload(); } catch (e) { fail(e); }
+  });
+  $('#ku-save').addEventListener('click', async (e) => {
+    const urls = ($('#ku-urls') as HTMLTextAreaElement).value.split(/\s+/).map((u) => u.trim()).filter(Boolean).slice(0, 10);
+    if (!urls.length) return toast('Add a link first.', true);
+    await busy(e.currentTarget as HTMLButtonElement, 'Reading...', async () => {
+      let n = 0;
+      for (const url of urls) { try { await api('POST', '/knowledge', { kind: 'url', url }); n++; } catch (err) { toast(`${url}: ${(err as Error).message}`, true); } }
+      if (n) { toast(`Added ${n} page${n === 1 ? '' : 's'}.`); reload(); }
+    });
+  });
+  dropZone($('#kf-drop'), async (files) => {
+    let n = 0;
+    for (const f of Array.from(files)) { const fd = new FormData(); fd.append('file', f); try { await api('POST', '/knowledge/upload', fd); n++; } catch (e) { fail(e); } }
+    if (n) { toast(`Added ${n} file${n === 1 ? '' : 's'}.`); reload(); }
+  });
+  (box.querySelector('#kf-drop input[type=file]') as HTMLInputElement | null)?.setAttribute('accept', '.txt,.md,.csv,text/plain,text/markdown,application/pdf');
+  box.querySelectorAll<HTMLInputElement>('[data-on]').forEach((i) => i.addEventListener('change', () => api('PUT', `/knowledge/${i.dataset.on}`, { active: i.checked }).catch(fail)));
+  box.querySelectorAll<HTMLElement>('[data-del]').forEach((b) => b.addEventListener('click', async () => { if (await confirmBox('Delete this from your knowledge base?', 'Delete')) { await api('DELETE', `/knowledge/${b.dataset.del}`); reload(); } }));
+  box.querySelectorAll<HTMLElement>('[data-open]').forEach((td) => td.addEventListener('click', async () => {
+    const k = await api<Any>('GET', `/knowledge/${td.dataset.open}`);
+    const m = modal('Edit knowledge', `<label class="f"><span>Title</span><input type="text" id="ke-title" value="${esc(k.title)}"></label>
+      ${k.url ? `<p class="hint"><a href="${esc(k.url)}" target="_blank" rel="noopener">${esc(k.url)}</a></p>` : ''}
+      <label class="f"><span>${k.file_key ? 'Notes about this PDF' : 'Text the AI reads'}</span><textarea id="ke-body" rows="14">${esc(k.body)}</textarea></label><button class="btn" id="ke-save">Save</button>`);
+    m.el.querySelector('#ke-save')!.addEventListener('click', async () => { try { await api('PUT', `/knowledge/${k.id}`, { title: ($('#ke-title') as HTMLInputElement).value, body: ($('#ke-body') as HTMLTextAreaElement).value }); m.close(); toast('Saved.'); reload(); } catch (e) { fail(e); } });
+  }));
+  const target = location.hash && box.querySelector(location.hash);
+  if (target) { target.scrollIntoView({ block: 'center' }); (target as HTMLElement).style.background = 'color-mix(in srgb,var(--gold) 18%,transparent)'; }
+}
 
 // ---------- AI ----------
 let aiCache: Any | null = null;

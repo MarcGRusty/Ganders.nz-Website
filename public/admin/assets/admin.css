@@ -167,3 +167,10 @@ tr.click:hover td{background:#fff}
 .insp input{width:100%;margin-top:4px;padding:5px 8px;font-size:13px}
 .clip{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw.sm i{width:14px;height:14px}
+
+/* Create Ideas */
+.sec-t{font:600 18px/1.2 var(--display);margin:0 0 12px}
+.card.idea{display:grid;gap:12px}
+@media(min-width:900px){.card.idea{grid-template-columns:1fr auto;align-items:start}.card.idea .row{justify-content:flex-end;max-width:260px}}
+@media(min-width:900px){.kb-add{grid-template-columns:1fr 1fr}}
+td.click{cursor:pointer}
