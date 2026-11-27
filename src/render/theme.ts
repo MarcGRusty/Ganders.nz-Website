@@ -64,6 +64,21 @@ h3{font-size:24px;line-height:1.2}
 .hero figure img{aspect-ratio:4/5;object-fit:cover;filter:grayscale(.2) contrast(1.05);border-radius:var(--r)}
 @media(min-width:760px){.hero-grid{grid-template-columns:1fr auto;gap:48px}.hero figure{width:clamp(200px,24vw,320px);max-width:none}}
 
+/* Page heading (inner pages) */
+.pagehead{padding:clamp(48px,9vw,120px) 0 clamp(32px,5vw,64px);border-bottom:1px solid color-mix(in srgb,var(--ink) 10%,transparent)}
+.pagehead .kicker{color:var(--accent);margin-bottom:16px}
+.pagehead h1{font-size:clamp(40px,7vw,96px);font-weight:500;line-height:.98;letter-spacing:-.035em;max-width:16ch}
+.pagehead .lede{font-size:clamp(18px,1.8vw,22px);line-height:1.5;max-width:52ch;margin-top:24px;color:color-mix(in srgb,var(--ink) 85%,var(--paper))}
+.pagehead .lede p{margin:0 0 .6em}
+
+/* Call to action */
+.cta-box{display:grid;gap:24px;align-items:center;padding:clamp(24px,4vw,48px);background:var(--ink);color:var(--paper);border-radius:var(--r)}
+.cta-box h2{font-size:clamp(28px,3.6vw,44px)}
+.cta-box p{margin:10px 0 0;color:color-mix(in srgb,var(--paper) 75%,var(--ink));max-width:52ch}
+.cta-box .btn{background:var(--accent);color:var(--ink);justify-self:start}
+.cta-box .btn:hover{background:var(--paper);color:var(--ink)}
+@media(min-width:760px){.cta-box{grid-template-columns:1fr auto}}
+
 /* Cards */
 .cards{display:grid;grid-template-columns:1fr;gap:1px;background:color-mix(in srgb,var(--ink) 14%,transparent);border:1px solid color-mix(in srgb,var(--ink) 14%,transparent)}
 .card{background:var(--paper);padding:28px;display:flex;flex-direction:column;gap:10px;text-decoration:none;min-height:200px;transition:background .25s}

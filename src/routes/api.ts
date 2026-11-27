@@ -4,28 +4,46 @@ import { layout } from '../render/layout';
 import { menuPages } from '../lib/db';
 import { Hono } from 'hono';
 import type { Env, Page, Post } from '../types';
-import { requireAuth, hashPassword, verifyPassword, startSession, endSession, currentUser } from '../lib/auth';
-import { getSettings, saveSettings, listPages, getPageById, listPosts, getPostById, snapshot, slugify } from '../lib/db';
+import { requireAuth, hashPassword, verifyPassword, startSession, endSession, loadUser, need, can, audit } from '../lib/auth';
+import peopleRoutes from './people';
+import { ensureSeed, getSettings, saveSettings, listPages, getPageById, listPosts, getPostById, snapshot, slugify } from '../lib/db';
 import { guard, guardDeep } from '../lib/style-guard';
 import { BLOCK_TYPES, newBlock } from '../lib/defaults';
+import { sendMail, mailReady, ownerAddress, fromAddress, wrapHtml, textToHtml } from '../lib/mail';
 
-type Vars = { Bindings: Env; Variables: { uid: number } };
+type Vars = { Bindings: Env; Variables: { uid: number; user: any } };
 const api = new Hono<Vars>();
 
 // ---------- Auth ----------
+// On a deployed site the first Owner comes from the OWNER_EMAIL and ADMIN_PASSWORD secrets, so
+// nobody else can claim the site before Marc signs in. Without them, the setup screen does the job.
+const presetOwner = (env: Env) => !!(env.OWNER_EMAIL && env.ADMIN_PASSWORD);
+async function ensureOwner(env: Env) {
+  if (!presetOwner(env)) return;
+  const users = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>();
+  if ((users?.n ?? 0) > 0) return;
+  const r = await env.DB.prepare('INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?) RETURNING id')
+    .bind(env.OWNER_EMAIL!.toLowerCase().trim(), await hashPassword(env.ADMIN_PASSWORD!), 'Marc').first<{ id: number }>();
+  await env.DB.prepare("INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = 'Owner'").bind(r!.id).run();
+}
+
 api.get('/auth/me', async (c) => {
+  await ensureOwner(c.env);
   const users = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>();
-  const uid = await currentUser(c);
-  return c.json({ signedIn: !!uid, needsSetup: (users?.n ?? 0) === 0 });
+  const u = await loadUser(c);
+  return c.json({ signedIn: !!u, needsSetup: (users?.n ?? 0) === 0, user: u ? { id: u.id, email: u.email, name: u.name, perms: [...u.perms], mustChange: u.mustChange } : null });
 });
 
 api.post('/auth/setup', async (c) => {
+  if (presetOwner(c.env)) return c.json({ error: 'Already set up. Sign in with your email.' }, 400);
   const users = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM users').first<{ n: number }>();
   if ((users?.n ?? 0) > 0) return c.json({ error: 'Already set up.' }, 400);
   const { email, password } = await c.req.json<{ email: string; password: string }>();
   if (!email || !password || password.length < 10) return c.json({ error: 'Use an email and a password of at least 10 characters.' }, 400);
-  const r = await c.env.DB.prepare('INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id')
-    .bind(email.toLowerCase().trim(), await hashPassword(password)).first<{ id: number }>();
+  const r = await c.env.DB.prepare('INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?) RETURNING id')
+    .bind(email.toLowerCase().trim(), await hashPassword(password), 'Marc').first<{ id: number }>();
+  // The first person is the Owner.
+  await c.env.DB.prepare("INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE name = 'Owner'").bind(r!.id).run();
   await startSession(c, r!.id);
   return c.json({ ok: true });
 });
@@ -35,13 +53,15 @@ api.post('/auth/login', async (c) => {
   const k = `rl:login:${ip}`;
   const tries = Number((await c.env.KV.get(k)) || 0);
   if (tries >= 10) return c.json({ error: 'Too many attempts. Try again in 15 minutes.' }, 429);
+  await ensureOwner(c.env);
   const { email, password } = await c.req.json<{ email: string; password: string }>();
-  const u = await c.env.DB.prepare('SELECT id, password_hash FROM users WHERE email = ?').bind(String(email || '').toLowerCase().trim()).first<{ id: number; password_hash: string }>();
-  if (!u || !(await verifyPassword(String(password || ''), u.password_hash))) {
+  const u = await c.env.DB.prepare('SELECT id, password_hash, active FROM users WHERE email = ?').bind(String(email || '').toLowerCase().trim()).first<{ id: number; password_hash: string; active: number }>();
+  if (!u || !u.active || !(await verifyPassword(String(password || ''), u.password_hash))) {
     await c.env.KV.put(k, String(tries + 1), { expirationTtl: 900 });
     return c.json({ error: 'That email and password do not match.' }, 401);
   }
   await startSession(c, u.id);
+  await c.env.DB.prepare("UPDATE users SET last_login = datetime('now') WHERE id = ?").bind(u.id).run();
   return c.json({ ok: true });
 });
 
@@ -51,11 +71,14 @@ api.post('/auth/logout', async (c) => { await endSession(c); return c.json({ ok:
 api.use('/*', async (c, next) => (c.req.path.startsWith('/api/auth/') ? next() : requireAuth(c, next)));
 
 api.route('/ai', aiRoutes);
+api.route('/people', peopleRoutes);
 
 // ---------- Settings ----------
 api.get('/settings', async (c) => c.json(await getSettings(c.env)));
 api.put('/settings', async (c) => {
   const body = guardDeep(await c.req.json());
+  const designOnly = Object.keys(body).every((k) => ['theme', 'themes', 'logo', 'favicon'].includes(k));
+  if (!can(c, designOnly ? 'design.edit' : 'settings.edit')) return c.json({ error: 'Your role does not allow this.' }, 403);
   const current = await getSettings(c.env);
   const next = { ...current, ...body, theme: { ...current.theme, ...(body.theme || {}) } };
   await saveSettings(c.env, next);
@@ -70,12 +93,12 @@ api.get('/blocks/new/:type', (c) => {
 });
 
 // ---------- Pages ----------
-api.get('/pages', async (c) => c.json(await listPages(c.env)));
-api.get('/pages/:id{[0-9]+}', async (c) => {
+api.get('/pages', need('pages.view'), async (c) => { await ensureSeed(c.env); return c.json(await listPages(c.env)); });
+api.get('/pages/:id{[0-9]+}', need('pages.view'), async (c) => {
   const p = await getPageById(c.env, Number(c.req.param('id')));
   return p ? c.json(p) : c.json({ error: 'Not found' }, 404);
 });
-api.post('/pages', async (c) => {
+api.post('/pages', need('pages.delete'), async (c) => {
   const b = guardDeep(await c.req.json<Partial<Page>>());
   const title = b.title?.trim() || 'New page';
   let slug = slugify(b.slug || title);
@@ -86,19 +109,22 @@ api.post('/pages', async (c) => {
     .bind(slug, title, JSON.stringify(blocks), b.in_menu ? 1 : 0).first<{ id: number }>();
   return c.json(await getPageById(c.env, r!.id), 201);
 });
-api.put('/pages/:id{[0-9]+}', async (c) => {
+api.put('/pages/:id{[0-9]+}', need('pages.edit'), async (c) => {
   const id = Number(c.req.param('id'));
   const cur = await getPageById(c.env, id);
   if (!cur) return c.json({ error: 'Not found' }, 404);
   const b = guardDeep(await c.req.json<Partial<Page>>());
   const next = { ...cur, ...b };
+  // Changing a live page, or putting one live, needs publish rights.
+  if ((cur.status === 'published' || next.status === 'published') && !can(c, 'pages.publish'))
+    return c.json({ error: 'This page is live, so saving it needs publish rights. Ask the site owner.' }, 403);
   next.slug = cur.slug === 'home' ? 'home' : slugify(next.slug);
   await snapshot(c.env, 'page', id, cur);
   await c.env.DB.prepare("UPDATE pages SET slug=?, title=?, status=?, in_menu=?, menu_order=?, blocks=?, seo=?, updated_at=datetime('now') WHERE id=?")
     .bind(next.slug, next.title, next.status, next.in_menu ? 1 : 0, next.menu_order ?? 0, JSON.stringify(next.blocks), JSON.stringify(next.seo || {}), id).run();
   return c.json(await getPageById(c.env, id));
 });
-api.delete('/pages/:id{[0-9]+}', async (c) => {
+api.delete('/pages/:id{[0-9]+}', need('pages.delete'), async (c) => {
   const id = Number(c.req.param('id'));
   const cur = await getPageById(c.env, id);
   if (!cur) return c.json({ error: 'Not found' }, 404);
@@ -109,12 +135,12 @@ api.delete('/pages/:id{[0-9]+}', async (c) => {
 });
 
 // ---------- Posts ----------
-api.get('/posts', async (c) => c.json(await listPosts(c.env, { status: c.req.query('status') || undefined })));
-api.get('/posts/:id{[0-9]+}', async (c) => {
+api.get('/posts', need('posts.view'), async (c) => c.json(await listPosts(c.env, { status: c.req.query('status') || undefined })));
+api.get('/posts/:id{[0-9]+}', need('posts.view'), async (c) => {
   const p = await getPostById(c.env, Number(c.req.param('id')));
   return p ? c.json(p) : c.json({ error: 'Not found' }, 404);
 });
-api.post('/posts', async (c) => {
+api.post('/posts', need('posts.edit'), async (c) => {
   const b = guardDeep(await c.req.json<Partial<Post>>());
   const title = b.title?.trim() || 'Untitled';
   let slug = slugify(b.slug || title);
@@ -123,12 +149,14 @@ api.post('/posts', async (c) => {
     .bind(slug, title, b.excerpt || '', b.body || '', b.status || 'draft', b.source || 'manual', JSON.stringify(b.tags || [])).first<{ id: number }>();
   return c.json(await getPostById(c.env, r!.id), 201);
 });
-api.put('/posts/:id{[0-9]+}', async (c) => {
+api.put('/posts/:id{[0-9]+}', need('posts.edit'), async (c) => {
   const id = Number(c.req.param('id'));
   const cur = await getPostById(c.env, id);
   if (!cur) return c.json({ error: 'Not found' }, 404);
   const b = guardDeep(await c.req.json<Partial<Post>>());
   const next = { ...cur, ...b };
+  if ((['published', 'scheduled'].includes(cur.status) || ['published', 'scheduled'].includes(next.status)) && !can(c, 'posts.publish'))
+    return c.json({ error: 'Publishing and scheduling need publish rights. Set it to "Ready for review" instead.' }, 403);
   if (cur.slug.startsWith('untitled') && (!b.slug || b.slug === cur.slug) && next.title && next.title !== 'Untitled' && !cur.published_at) next.slug = next.title;
   next.slug = slugify(next.slug);
   if (next.slug !== cur.slug && (await c.env.DB.prepare('SELECT 1 FROM posts WHERE slug = ? AND id != ?').bind(next.slug, id).first())) next.slug = `${next.slug}-${id}`;
@@ -139,7 +167,7 @@ api.put('/posts/:id{[0-9]+}', async (c) => {
     .bind(next.slug, next.title, next.excerpt, next.body, next.cover ?? null, JSON.stringify(next.tags || []), next.status, next.publish_at ?? null, next.published_at ?? null, id).run();
   return c.json(await getPostById(c.env, id));
 });
-api.delete('/posts/:id{[0-9]+}', async (c) => {
+api.delete('/posts/:id{[0-9]+}', need('posts.delete'), async (c) => {
   const id = Number(c.req.param('id'));
   const cur = await getPostById(c.env, id);
   if (cur) await snapshot(c.env, 'post', id, cur, 'deleted');
@@ -149,6 +177,7 @@ api.delete('/posts/:id{[0-9]+}', async (c) => {
 
 // ---------- Revisions ----------
 api.get('/revisions/:entity/:id{[0-9]+}', async (c) => {
+  if (!can(c, `${c.req.param('entity') === 'post' ? 'posts' : c.req.param('entity') === 'settings' ? 'settings' : 'pages'}.${c.req.param('entity') === 'settings' ? 'edit' : 'view'}`)) return c.json({ error: 'Not allowed.' }, 403);
   const { results } = await c.env.DB.prepare('SELECT id, note, created_at FROM revisions WHERE entity = ? AND entity_id = ? ORDER BY id DESC LIMIT 50')
     .bind(c.req.param('entity'), Number(c.req.param('id'))).all();
   return c.json(results);
@@ -159,12 +188,12 @@ api.get('/revision/:rid{[0-9]+}', async (c) => {
 });
 
 // ---------- Media ----------
-api.get('/media', async (c) => {
+api.get('/media', need('media.view'), async (c) => {
   const { results } = await c.env.DB.prepare('SELECT * FROM media ORDER BY id DESC LIMIT 500').all();
   return c.json(results);
 });
 const ALLOWED = /^(image\/(png|jpe?g|gif|webp|avif|svg\+xml|x-icon|vnd\.microsoft\.icon)|application\/pdf|video\/(mp4|webm)|audio\/mpeg)$/;
-api.post('/media', async (c) => {
+api.post('/media', need('media.upload'), async (c) => {
   const form = await c.req.parseBody();
   const file = form.file as File | undefined;
   if (!file || typeof file === 'string') return c.json({ error: 'No file.' }, 400);
@@ -177,29 +206,88 @@ api.post('/media', async (c) => {
     .bind(key, file.name, file.type, file.size, String(form.alt || '')).first();
   return c.json(r, 201);
 });
-api.put('/media/:id{[0-9]+}', async (c) => {
+api.put('/media/:id{[0-9]+}', need('media.upload'), async (c) => {
   const { alt } = guardDeep(await c.req.json<{ alt: string }>());
   await c.env.DB.prepare('UPDATE media SET alt = ? WHERE id = ?').bind(alt || '', Number(c.req.param('id'))).run();
   return c.json({ ok: true });
 });
-api.delete('/media/:id{[0-9]+}', async (c) => {
+api.delete('/media/:id{[0-9]+}', need('media.delete'), async (c) => {
   const m = await c.env.DB.prepare('SELECT key FROM media WHERE id = ?').bind(Number(c.req.param('id'))).first<{ key: string }>();
   if (m) { await c.env.MEDIA.delete(m.key); await c.env.DB.prepare('DELETE FROM media WHERE id = ?').bind(Number(c.req.param('id'))).run(); }
   return c.json({ ok: true });
 });
 
-// ---------- Messages from the contact form ----------
-api.get('/messages', async (c) => {
-  const { results } = await c.env.DB.prepare('SELECT * FROM messages ORDER BY id DESC LIMIT 200').all();
-  return c.json(results);
+// ---------- Inbox: everything people send through forms ----------
+const STATUSES = ['new', 'open', 'replied', 'done', 'spam'];
+api.get('/messages', need('messages.view'), async (c) => {
+  const st = c.req.query('status');
+  const q = st && STATUSES.includes(st)
+    ? c.env.DB.prepare('SELECT * FROM messages WHERE status = ? ORDER BY id DESC LIMIT 300').bind(st)
+    : st === 'all' ? c.env.DB.prepare('SELECT * FROM messages ORDER BY id DESC LIMIT 300')
+    : c.env.DB.prepare("SELECT * FROM messages WHERE status NOT IN ('done','spam') ORDER BY id DESC LIMIT 300");
+  const { results } = await q.all();
+  const counts = await c.env.DB.prepare('SELECT status, COUNT(*) n FROM messages GROUP BY status').all<{ status: string; n: number }>();
+  return c.json({ items: results, counts: Object.fromEntries(counts.results.map((r) => [r.status, r.n])), mail: mailReady(c.env) });
 });
-api.put('/messages/:id{[0-9]+}', async (c) => {
-  await c.env.DB.prepare('UPDATE messages SET read = 1 WHERE id = ?').bind(Number(c.req.param('id'))).run();
+api.get('/messages/:id{[0-9]+}', need('messages.view'), async (c) => {
+  const id = Number(c.req.param('id'));
+  const m = await c.env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first<any>();
+  if (!m) return c.json({ error: 'Not found' }, 404);
+  if (m.status === 'new' && can(c, 'messages.reply')) {
+    await c.env.DB.prepare("UPDATE messages SET status = 'open', read = 1, updated_at = datetime('now') WHERE id = ?").bind(id).run();
+    m.status = 'open';
+  }
+  const { results } = await c.env.DB.prepare('SELECT r.*, u.name AS by_name FROM message_replies r LEFT JOIN users u ON u.id = r.sent_by WHERE message_id = ? ORDER BY r.id').bind(id).all();
+  return c.json({ ...m, data: m.data ? JSON.parse(m.data) : null, replies: results, mail: mailReady(c.env) });
+});
+api.put('/messages/:id{[0-9]+}', need('messages.reply'), async (c) => {
+  const id = Number(c.req.param('id'));
+  const b = await c.req.json<{ status?: string; notes?: string }>().catch(() => ({} as any));
+  if (b.status && !STATUSES.includes(b.status)) return c.json({ error: 'Unknown status.' }, 400);
+  await c.env.DB.prepare("UPDATE messages SET status = COALESCE(?, status), notes = COALESCE(?, notes), read = 1, updated_at = datetime('now') WHERE id = ?")
+    .bind(b.status ?? null, b.notes != null ? guard(String(b.notes)).text.slice(0, 5000) : null, id).run();
+  if (b.status) await audit(c, 'message.status', `#${id} ${b.status}`);
   return c.json({ ok: true });
 });
-api.delete('/messages/:id{[0-9]+}', async (c) => {
+api.post('/messages/:id{[0-9]+}/reply', need('messages.reply'), async (c) => {
+  const id = Number(c.req.param('id'));
+  const m = await c.env.DB.prepare('SELECT * FROM messages WHERE id = ?').bind(id).first<any>();
+  if (!m) return c.json({ error: 'Not found' }, 404);
+  const { body } = await c.req.json<{ body: string }>();
+  const text = guard(String(body || '')).text.trim();
+  if (!text) return c.json({ error: 'Write a reply first.' }, 400);
+  const settings = await getSettings(c.env);
+  const replyTo = await ownerAddress(c.env, settings.email);
+  const quoted = m.body.split('\n').map((l: string) => `> ${l}`).join('\n');
+  const r = await sendMail(c.env, {
+    to: m.email, subject: `Re: your message to ${settings.name}`, replyTo: replyTo || undefined, kind: 'reply',
+    text: `${text}\n\n${quoted}`,
+    html: wrapHtml(`${textToHtml(text)}<div style="margin-top:22px;padding-left:12px;border-left:3px solid #D5DBDA;color:#55646B">${textToHtml(m.body)}</div>`),
+  }, settings.name);
+  await c.env.DB.prepare('INSERT INTO message_replies (message_id, body, sent_by, ok, error) VALUES (?, ?, ?, ?, ?)').bind(id, text, c.get('uid'), r.ok ? 1 : 0, r.error ?? null).run();
+  if (!r.ok) return c.json({ error: `The email did not send. ${r.error || ''}`.trim() }, 502);
+  await c.env.DB.prepare("UPDATE messages SET status = 'replied', read = 1, updated_at = datetime('now') WHERE id = ?").bind(id).run();
+  await audit(c, 'message.reply', `#${id} to ${m.email}`);
+  return c.json({ ok: true });
+});
+api.delete('/messages/:id{[0-9]+}', need('messages.delete'), async (c) => {
+  await c.env.DB.prepare('DELETE FROM message_replies WHERE message_id = ?').bind(Number(c.req.param('id'))).run();
   await c.env.DB.prepare('DELETE FROM messages WHERE id = ?').bind(Number(c.req.param('id'))).run();
+  await audit(c, 'message.delete', `#${c.req.param('id')}`);
   return c.json({ ok: true });
+});
+
+// ---------- Email ----------
+api.get('/mail', need('mail.manage'), async (c) => {
+  const s = await getSettings(c.env);
+  const { results } = await c.env.DB.prepare('SELECT * FROM mail_log ORDER BY id DESC LIMIT 30').all();
+  return c.json({ ready: mailReady(c.env), from: fromAddress(c.env, s.name), to: await ownerAddress(c.env, s.email), log: results });
+});
+api.post('/mail/test', need('mail.manage'), async (c) => {
+  const s = await getSettings(c.env);
+  const user = c.get('user');
+  const r = await sendMail(c.env, { to: user.email, subject: 'Test email from your website', kind: 'test', text: `Kia ora ${user.name || ''},\n\nThis is a test from ${s.name}. If you are reading it, email from the site works.` }, s.name);
+  return r.ok ? c.json({ ok: true, to: user.email }) : c.json({ error: `The email did not send. ${r.error || ''}`.trim() }, 502);
 });
 
 // ---------- Style check ----------
@@ -214,7 +302,7 @@ api.get('/stats', async (c) => {
   const [pages, published, drafts, review, unread] = await Promise.all([
     q('SELECT COUNT(*) n FROM pages'), q("SELECT COUNT(*) n FROM posts WHERE status='published'"),
     q("SELECT COUNT(*) n FROM posts WHERE status='draft'"), q("SELECT COUNT(*) n FROM posts WHERE status IN ('review','idea')"),
-    q('SELECT COUNT(*) n FROM messages WHERE read = 0'),
+    q("SELECT COUNT(*) n FROM messages WHERE status = 'new'"),
   ]);
   return c.json({ pages, published, drafts, review, unread });
 });

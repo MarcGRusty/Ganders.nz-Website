@@ -5,11 +5,12 @@ import { providerById } from '../ai/providers';
 import { sanitizeSvg } from '../ai/svg';
 import { getSettings, saveSettings, slugify } from '../lib/db';
 import { stripDashes } from '../lib/style-guard';
+import { need } from '../lib/auth';
 
 // Mounted under /api/ai, behind the Studio sign-in.
-const ai = new Hono<{ Bindings: Env; Variables: { uid: number } }>();
+const ai = new Hono<{ Bindings: Env; Variables: { uid: number; user: any } }>();
 
-ai.get('/providers', async (c) => {
+ai.get('/providers', need('ai.use'), async (c) => {
   const [providers, settings, log] = await Promise.all([
     listProviders(c.env),
     getAiSettings(c.env),
@@ -18,14 +19,14 @@ ai.get('/providers', async (c) => {
   return c.json({ providers, settings, log: log.results, canStoreKeys: !!c.env.APP_KEY });
 });
 
-ai.put('/providers/:id', async (c) => {
+ai.put('/providers/:id', need('ai.manage'), async (c) => {
   try {
-    await saveProvider(c.env, c.req.param('id'), await c.req.json());
+    await saveProvider(c.env, c.req.param('id')!, await c.req.json());
     return c.json({ ok: true });
   } catch (e) { return c.json({ error: (e as Error).message }, 400); }
 });
 
-ai.put('/settings', async (c) => {
+ai.put('/settings', need('ai.manage'), async (c) => {
   const b = await c.req.json<{ mode?: string; voice?: string }>();
   const cur = await getAiSettings(c.env);
   const mode = b.mode && (b.mode === 'auto' || providerById(b.mode)) ? b.mode : cur.mode;
@@ -33,7 +34,7 @@ ai.put('/settings', async (c) => {
   return c.json({ ok: true });
 });
 
-ai.post('/test/:id', async (c) => {
+ai.post('/test/:id', need('ai.manage'), async (c) => {
   try {
     const r = await generate(c.env, { task: 'short', choice: c.req.param('id'), prompt: 'Reply with one short friendly sentence confirming you are connected. Plain text.' , maxTokens: 300 });
     return c.json(r);
@@ -43,7 +44,7 @@ ai.post('/test/:id', async (c) => {
 const HTML_RULES = 'Return only the article body as clean HTML using <p>, <h2>, <h3>, <ul>, <ol>, <li>, <blockquote>, <strong>, <em> and <a>. No <html>, <body>, <h1>, title, code fences or commentary.';
 
 /** Writing help in the post editor. Everything comes back for Marc to review; nothing is saved. */
-ai.post('/write', async (c) => {
+ai.post('/write', need('ai.use'), async (c) => {
   const b = await c.req.json<{ action: string; choice?: string; model?: string; title?: string; excerpt?: string; body?: string; notes?: string; selection?: string }>();
   const ctx = `Title: ${b.title || '(none yet)'}\nSummary: ${b.excerpt || '(none yet)'}`;
   try {
@@ -78,7 +79,7 @@ ai.post('/write', async (c) => {
 });
 
 /** AI logo or browser icon: returns a few SVG options to choose from. */
-ai.post('/logo', async (c) => {
+ai.post('/logo', need('ai.use', 'design.edit'), async (c) => {
   const b = await c.req.json<{ kind: 'logo' | 'favicon'; brief?: string; choice?: string; model?: string }>();
   const s = await getSettings(c.env);
   const t = s.theme;
@@ -101,7 +102,7 @@ Return only one complete <svg> element. No scripts, no external images or fonts,
   return c.json({ options });
 });
 
-ai.post('/logo/use', async (c) => {
+ai.post('/logo/use', need('design.edit'), async (c) => {
   const b = await c.req.json<{ kind: 'logo' | 'favicon'; svg: string }>();
   let svg: string;
   try { svg = sanitizeSvg(b.svg); } catch (e) { return c.json({ error: (e as Error).message }, 400); }

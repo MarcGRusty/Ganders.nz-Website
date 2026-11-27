@@ -32,6 +32,15 @@ const renderers: Record<string, R> = {
     </div></section>`;
   },
 
+  header: ({ data: d }, ctx) => `<section class="pagehead"><div class="wrap rise">
+    <div class="mono kicker"${ed(ctx, 'kicker')}>${esc(d.kicker)}</div>
+    <h1${ed(ctx, 'heading')}>${esc(d.heading)}</h1>
+    <div class="lede"${ed(ctx, 'body', true)}>${clean(d.body)}</div></div></section>`,
+
+  cta: ({ data: d }, ctx) => `<section class="sec cta"><div class="wrap"><div class="cta-box rise">
+    <div><h2${ed(ctx, 'heading')}>${esc(d.heading)}</h2><p${ed(ctx, 'body')}>${esc(d.body)}</p></div>
+    <a class="btn" href="${esc(d.link || '/contact')}"><span${ed(ctx, 'button')}>${esc(d.button || 'Get in touch')}</span></a></div></div></section>`,
+
   text: ({ data: d }, ctx) => `<section class="sec"><div class="wrap">${head(ctx, d.heading)}
     <div class="prose indent rise"${ed(ctx, 'body', true)}>${clean(d.body)}</div></div></section>`,
 
@@ -75,6 +84,7 @@ const renderers: Record<string, R> = {
       <input name="name" placeholder="Your name" required maxlength="120" aria-label="Your name">
       <input name="email" type="email" placeholder="Your email" required maxlength="200" aria-label="Your email">
       <textarea name="body" placeholder="What's on your mind?" required maxlength="5000" aria-label="Message"></textarea>
+      <input type="hidden" name="back" data-back>
       <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
       <button class="btn" type="submit"${ctx.edit ? ' onclick="return false"' : ''}><span${ed(ctx, 'button')}>${esc(d.button || 'Send')}</span></button>
     </form></div></div></section>`,

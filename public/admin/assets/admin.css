@@ -49,6 +49,10 @@ tr.click:hover td{background:#fff}
 .pill.published{background:#DDEBDF;color:var(--ok)}
 .pill.review,.pill.idea{background:#F4E4CC;color:var(--warn)}
 .pill.scheduled{background:#E1E4F2;color:#3C4A8A}
+.pill.new{background:#F4E4CC;color:var(--warn)}
+.pill.open{background:#E1E4F2;color:#3C4A8A}
+.pill.replied,.pill.done{background:#DDEBDF;color:var(--ok)}
+.pill.spam{background:#F2DEDC;color:var(--danger)}
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;flex-wrap:wrap}
 .tabs button{all:unset;cursor:pointer;padding:10px 12px;font:500 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--muted);border-bottom:2px solid transparent}
 .tabs button.on{color:var(--ink);border-color:var(--accent)}

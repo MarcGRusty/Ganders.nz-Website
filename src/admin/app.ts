@@ -6,6 +6,10 @@ import Placeholder from '@tiptap/extension-placeholder';
 
 type Any = Record<string, any>;
 
+// ---------- Who is signed in ----------
+let ME: { id: number; email: string; name: string; perms: string[]; mustChange: boolean } = { id: 0, email: '', name: '', perms: [], mustChange: false };
+const can = (p: string) => ME.perms.includes('*') || ME.perms.includes(p);
+
 // ---------- Tiny helpers ----------
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T;
 const esc = (s: unknown) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -61,6 +65,8 @@ document.addEventListener('click', (e) => {
 });
 window.addEventListener('popstate', () => route());
 
+/** The public site address. On admin.* or studio.* hosts, links go to the main domain. */
+const SITE = /^(admin|studio)\./.test(location.hostname) ? `${location.protocol}//${location.hostname.replace(/^(admin|studio)\./, '')}` : '';
 const mediaUrl = (k: string) => (!k ? '' : /^https?:|^\//.test(k) ? k : `/media/${k}`);
 const ago = (iso: string) => {
   const d = new Date(iso.replace(' ', 'T') + 'Z');
@@ -83,35 +89,37 @@ async function renderLogin() {
     const f = new FormData(e.target as HTMLFormElement);
     try {
       await api('POST', setup ? '/auth/setup' : '/auth/login', { email: f.get('email'), password: f.get('password') });
+      $('#app').innerHTML = '';
       boot();
     } catch (err) { fail(err); }
   });
 }
 
 // ---------- Shell ----------
-const NAV: [string, string, string?][] = [
-  ['/admin', 'Overview'],
-  ['/admin/pages', 'Pages'],
-  ['/admin/writing', 'Writing'],
-  ['/admin/media', 'Media'],
-  ['/admin/design', 'Design'],
-  ['/admin/settings', 'Site details'],
-  ['/admin/messages', 'Messages'],
-  ['/admin/ai', 'AI providers'],
-  ['/admin/ideas', 'Create Ideas', 'Soon'],
-  ['/admin/social', 'Social', 'Soon'],
-  ['/admin/integrations', 'Integrations', 'Soon'],
-  ['/admin/modules', 'Modules', 'Soon'],
+const NAV: [string, string, string, string?][] = [
+  ['/admin', 'Overview', ''],
+  ['/admin/pages', 'Pages', 'pages.view'],
+  ['/admin/writing', 'Writing', 'posts.view'],
+  ['/admin/media', 'Media', 'media.view'],
+  ['/admin/design', 'Design', 'design.edit'],
+  ['/admin/settings', 'Site details', 'settings.edit'],
+  ['/admin/messages', 'Inbox', 'messages.view'],
+  ['/admin/ai', 'AI providers', 'ai.manage'],
+  ['/admin/ideas', 'Create Ideas', 'ideas.use', 'Soon'],
+  ['/admin/social', 'Social', 'social.post', 'Soon'],
+  ['/admin/integrations', 'Integrations', 'integrations.manage', 'Soon'],
+  ['/admin/modules', 'Modules', 'modules.manage', 'Soon'],
+  ['/admin/people', 'People', 'users.manage'],
 ];
 
 function shell() {
   if ($('.shell')) return;
   $('#app').innerHTML = `<div class="shell"><aside class="side">
     <a class="logo" href="/admin" data-link><i></i>Studio</a>
-    ${NAV.map(([href, label, tag], i) => `${i === 0 ? '<div class="grp mono">Site</div>' : i === 7 ? '<div class="grp mono">Grow</div>' : ''}<a class="nav" href="${href}" data-link>${label}${tag ? `<small>${tag}</small>` : ''}</a>`).join('')}
-    <div class="foot"><a href="/" target="_blank" rel="noopener">View site</a><button id="logout">Sign out</button></div>
+    ${NAV.map(([href, label, perm, tag], i) => `${i === 0 ? '<div class="grp mono">Site</div>' : i === 7 ? '<div class="grp mono">Grow</div>' : i === 12 ? '<div class="grp mono">Team</div>' : ''}${!perm || can(perm) ? `<a class="nav" href="${href}" data-link>${label}${tag ? `<small>${tag}</small>` : ''}</a>` : ''}`).join('')}
+    <div class="foot"><a href="/admin/account" data-link>${esc(ME.name || 'Your account')}</a><a href="${esc(SITE)}" target="_blank" rel="noopener">View site</a><button id="logout">Sign out</button></div>
   </aside><main id="main"></main></div>`;
-  $('#logout').addEventListener('click', async () => { await api('POST', '/auth/logout'); renderLogin(); });
+  $('#logout').addEventListener('click', async () => { await api('POST', '/auth/logout'); $('#app').innerHTML = ''; renderLogin(); });
 }
 
 function setActive(path: string) {
@@ -140,7 +148,10 @@ async function route() {
     if (path === '/admin/design') return await viewDesign(main);
     if (path === '/admin/settings') return await viewSettings(main);
     if (path === '/admin/messages') return await viewMessages(main);
+    r = m(/^\/admin\/messages\/(\d+)$/); if (r) return await viewMessage(main, Number(r[1]));
     if (path === '/admin/ai') return await viewAi(main);
+    if (path === '/admin/people') return await viewPeople(main);
+    if (path === '/admin/account') return await viewAccount(main);
     const soon = SOON[path.split('/')[2]];
     if (soon) return viewSoon(main, soon);
     main.innerHTML = '<div class="head"><h1>Not found</h1></div>';
@@ -155,7 +166,7 @@ async function viewOverview(main: HTMLElement) {
   main.innerHTML = `<div class="head"><div><h1>${hi}, Marc.</h1><div class="sub">Here is where the site stands.</div></div>
     <div class="row"><a class="btn" href="/admin/writing" data-link id="newpost">Write something</a><a class="btn ghost" href="/admin/pages" data-link>Edit pages</a></div></div>
     <div class="grid g4">
-      ${[['published', 'Published posts'], ['drafts', 'Drafts'], ['review', 'Waiting for review'], ['pages', 'Pages'], ['unread', 'Unread messages']].map(([k, l]) => `<div class="card stat"><div class="n">${s[k]}</div><div class="mono l">${l}</div></div>`).join('')}
+      ${[['published', 'Published posts'], ['drafts', 'Drafts'], ['review', 'Waiting for review'], ['pages', 'Pages'], ['unread', 'New in inbox']].map(([k, l]) => `<div class="card stat"><div class="n">${s[k]}</div><div class="mono l">${l}</div></div>`).join('')}
     </div>`;
 }
 
@@ -163,12 +174,12 @@ async function viewOverview(main: HTMLElement) {
 async function viewPages(main: HTMLElement) {
   const pages = await api<Any[]>('GET', '/pages');
   main.innerHTML = `<div class="head"><div><h1>Pages</h1><div class="sub">Every page on the site. Click one to edit it visually.</div></div>
-    <button class="btn" id="add">New page</button></div>
+    ${can('pages.delete') ? '<button class="btn" id="add">New page</button>' : ''}</div>
     <div class="card" style="padding:0;overflow-x:auto"><table><thead><tr><th>Title</th><th>Address</th><th>Status</th><th>In menu</th><th>Updated</th></tr></thead>
     <tbody>${pages.map((p) => `<tr class="click" data-id="${p.id}"><td><b>${esc(p.title)}</b></td><td class="mono">/${p.slug === 'home' ? '' : esc(p.slug)}</td>
       <td><span class="pill ${p.status}">${p.status}</span></td><td>${p.in_menu ? 'Yes' : ''}</td><td class="hint">${ago(p.updated_at)}</td></tr>`).join('')}</tbody></table></div>`;
   main.querySelectorAll('tr.click').forEach((tr) => tr.addEventListener('click', () => go(`/admin/pages/${(tr as HTMLElement).dataset.id}`)));
-  $('#add').addEventListener('click', () => {
+  $('#add')?.addEventListener('click', () => {
     const m = modal('New page', `<form id="np"><label class="f"><span>Title</span><input type="text" id="np-title" required placeholder="About"></label>
       <label class="row" style="margin-bottom:16px"><input type="checkbox" id="np-menu" checked> Show in the menu</label><button class="btn">Create page</button></form>`);
     m.el.querySelector('form')!.addEventListener('submit', async (e) => {
@@ -211,9 +222,9 @@ async function viewPageEditor(main: HTMLElement, id: number) {
       <button class="btn ghost sm" id="dev">Phone view</button>
       <button class="btn ghost sm" id="pg-settings">Page settings</button>
       <button class="btn ghost sm" id="hist">History</button>
-      <a class="btn ghost sm" href="${page.slug === 'home' ? '/' : '/' + esc(page.slug)}" target="_blank" rel="noopener">View</a>
+      <a class="btn ghost sm" href="${esc(SITE)}${page.slug === 'home' ? '/' : '/' + esc(page.slug)}" target="_blank" rel="noopener">View</a>
       <button class="btn" id="save">Save</button>
-      <button class="btn ghost" id="pub">${page.status === 'published' ? 'Unpublish' : 'Publish'}</button>
+      ${can('pages.publish') ? `<button class="btn ghost" id="pub">${page.status === 'published' ? 'Unpublish' : 'Publish'}</button>` : ''}
     </div></div>
     <div class="editor"><div class="blocks" id="blocks"></div><div class="frame" id="frame"><iframe id="pv" title="Live page preview"></iframe></div></div>`;
 
@@ -281,7 +292,7 @@ async function viewPageEditor(main: HTMLElement, id: number) {
       if (/^(image|src|cover)$/.test(key)) return `<label class="f"><span>${key === 'src' ? 'Image' : 'Photo'}</span><div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:3px">` : ''}<button type="button" class="btn ghost sm" data-pick="${esc(path)}">${v ? 'Change' : 'Choose'}</button>${v ? `<button type="button" class="btn ghost sm" data-clear="${esc(path)}">Remove</button>` : ''}</div></label>`;
       if (typeof v === 'number') return `<label class="f"><span>${esc(key)}</span><input type="number" data-p="${esc(path)}" value="${v}"></label>`;
       if (key === 'html') return `<label class="f"><span>HTML to embed</span><textarea data-p="${esc(path)}" spellcheck="false" style="font-family:var(--mono);font-size:12px">${esc(v)}</textarea><small class="hint">Runs in a sandbox, so it can't affect the rest of the site.</small></label>`;
-      if (key === 'link') return `<label class="f"><span>Link</span><input type="url" data-p="${esc(path)}" value="${esc(v)}" placeholder="https://"></label>`;
+      if (key === 'link') return `<label class="f"><span>Link</span><input type="text" inputmode="url" data-p="${esc(path)}" value="${esc(v)}" placeholder="/contact or https://..."></label>`;
       if (key === 'body') return '';
       return `<label class="f"><span>${esc(key)}</span><input type="text" data-p="${esc(path)}" value="${esc(v)}">${key === 'heading' && b.type === 'hero' ? '<small class="hint">Wrap a word in *stars* to colour it.</small>' : ''}</label>`;
     };
@@ -334,12 +345,12 @@ async function viewPageEditor(main: HTMLElement, id: number) {
       dirty = false;
       ($('#save') as HTMLButtonElement).textContent = 'Save';
       $('#pg-status').className = `pill ${page.status}`; $('#pg-status').textContent = page.status;
-      ($('#pub') as HTMLButtonElement).textContent = page.status === 'published' ? 'Unpublish' : 'Publish';
+      if ($('#pub')) ($('#pub') as HTMLButtonElement).textContent = page.status === 'published' ? 'Unpublish' : 'Publish';
       toast(page.status === 'published' ? 'Saved. It is live.' : 'Saved as a draft.');
     } catch (e) { fail(e); }
   }
   $('#save').addEventListener('click', () => save());
-  $('#pub').addEventListener('click', () => save({ status: page.status === 'published' ? 'draft' : 'published' }));
+  $('#pub')?.addEventListener('click', () => save({ status: page.status === 'published' ? 'draft' : 'published' }));
   $('#pg-title').addEventListener('input', markDirty);
   $('#dev').addEventListener('click', () => {
     device = device === 'desktop' ? 'mobile' : 'desktop';
@@ -350,7 +361,7 @@ async function viewPageEditor(main: HTMLElement, id: number) {
     const m = modal('Page settings', `<form id="ps">
       <label class="f"><span>Address</span><input type="text" id="ps-slug" value="${esc(page.slug)}" ${page.slug === 'home' ? 'disabled' : ''}></label>
       <label class="row" style="margin-bottom:14px"><input type="checkbox" id="ps-menu" ${page.in_menu ? 'checked' : ''}> Show in the menu</label>
-      <label class="f"><span>Menu order</span><input type="number" id="ps-order" value="${page.menu_order || 0}"></label>
+      <label class="f"><span>Menu order</span><input type="number" id="ps-order" value="${page.menu_order || 0}"><small class="hint">Lower numbers come first. Writing sits at 50, so use a higher number to go after it.</small></label>
       <label class="f"><span>Search and sharing description</span><textarea id="ps-desc" maxlength="300">${esc(page.seo?.description || '')}</textarea></label>
       <div class="row"><button class="btn">Apply</button>${page.slug !== 'home' ? '<button type="button" class="btn danger" id="ps-del">Delete page</button>' : ''}</div></form>`);
     m.el.querySelector('form')!.addEventListener('submit', (e) => {
@@ -462,16 +473,16 @@ async function viewPostEditor(main: HTMLElement, id: number) {
   let dirty = false;
   main.innerHTML = `<div class="head" style="margin-bottom:16px"><a class="mono hint" href="/admin/writing" data-link>Writing</a>
     <div class="row"><span class="pill ${post.status}" id="st-pill">${post.status}</span><button class="btn ghost sm" id="hist">History</button>
-    <a class="btn ghost sm" href="/writing/${esc(post.slug)}?preview=1" target="_blank" rel="noopener" id="pv">Preview</a><button class="btn" id="save">Save</button></div></div>
+    <a class="btn ghost sm" href="${esc(SITE)}/writing/${esc(post.slug)}?preview=1" target="_blank" rel="noopener" id="pv">Preview</a><button class="btn" id="save">Save</button></div></div>
     <div class="post-ed"><div class="paper">
       <textarea class="ttl" id="title" rows="1" placeholder="Title">${esc(post.title === 'Untitled' ? '' : post.title)}</textarea>
       <textarea class="exc" id="excerpt" rows="2" placeholder="One line that makes someone want to read it">${esc(post.excerpt)}</textarea>
       <div class="tb" id="tb"></div><div id="body"></div>
     </div>
     <aside class="grid" style="gap:14px">
-      <div class="card"><label class="f"><span>Status</span><select id="status">${['idea', 'draft', 'review', 'scheduled', 'published'].map((s) => `<option ${s === post.status ? 'selected' : ''} value="${s}">${s === 'review' ? 'Ready for review' : s[0].toUpperCase() + s.slice(1)}</option>`).join('')}</select></label>
+      <div class="card"><label class="f"><span>Status</span><select id="status">${['idea', 'draft', 'review', ...(can('posts.publish') ? ['scheduled', 'published'] : [])].map((s) => `<option ${s === post.status ? 'selected' : ''} value="${s}">${s === 'review' ? 'Ready for review' : s[0].toUpperCase() + s.slice(1)}</option>`).join('')}</select></label>
         <label class="f" id="when" ${post.status === 'scheduled' ? '' : 'hidden'}><span>Publish at (NZ time)</span><input type="datetime-local" id="publish_at"></label>
-        <button class="btn" id="publish" style="width:100%;justify-content:center">${post.status === 'published' ? 'Update live post' : 'Publish now'}</button></div>
+        ${can('posts.publish') ? `<button class="btn" id="publish" style="width:100%;justify-content:center">${post.status === 'published' ? 'Update live post' : 'Publish now'}</button>` : '<p class="hint" style="margin:0">When it\'s ready, set it to "Ready for review" and save.</p>'}</div>
       <div class="card"><label class="f"><span>Cover image</span><div id="cover"></div></label></div>
       <div class="card"><label class="f"><span>Tags</span><input type="text" id="tags" value="${esc(post.tags.join(', '))}" placeholder="security, travel"></label>
         <label class="f" style="margin:0"><span>Address</span><input type="text" id="slug" value="${esc(post.slug)}"></label></div>
@@ -568,12 +579,12 @@ async function viewPostEditor(main: HTMLElement, id: number) {
       $('#st-pill').className = `pill ${post.status}`; $('#st-pill').textContent = post.status;
       ($('#slug') as HTMLInputElement).value = post.slug;
       ($('#pv') as HTMLAnchorElement).href = `/writing/${post.slug}?preview=1`;
-      $('#publish').textContent = post.status === 'published' ? 'Update live post' : 'Publish now';
+      if ($('#publish')) $('#publish').textContent = post.status === 'published' ? 'Update live post' : 'Publish now';
       toast(post.status === 'published' ? 'Published.' : post.status === 'scheduled' ? 'Scheduled.' : 'Saved.');
     } catch (e) { fail(e); }
   }
   $('#save').addEventListener('click', () => save());
-  $('#publish').addEventListener('click', () => save('published'));
+  $('#publish')?.addEventListener('click', () => save('published'));
   $('#hist').addEventListener('click', () => showHistory('post', id, (d) => {
     ($('#title') as HTMLTextAreaElement).value = d.title; ($('#excerpt') as HTMLTextAreaElement).value = d.excerpt; editor.commands.setContent(d.body || ''); post.cover = d.cover; renderCover(); dirty = true;
   }));
@@ -700,14 +711,62 @@ async function viewSettings(main: HTMLElement) {
 }
 
 // ---------- Messages ----------
-async function viewMessages(main: HTMLElement) {
-  const list = await api<Any[]>('GET', '/messages');
-  main.innerHTML = `<div class="head"><div><h1>Messages</h1><div class="sub">From the contact form on your site.</div></div></div>
-    ${list.length ? list.map((m) => `<div class="card" style="margin-bottom:12px;${m.read ? '' : 'border-color:var(--accent)'}"><div class="row" style="justify-content:space-between"><b>${esc(m.name)}</b><span class="hint">${ago(m.created_at)}</span></div>
-      <div class="hint" style="margin-bottom:8px;user-select:all">${esc(m.email)}</div><p style="white-space:pre-wrap;margin:0 0 12px">${esc(m.body)}</p>
-      <div class="row">${m.read ? '' : `<button class="btn ghost sm" data-read="${m.id}">Mark as read</button>`}<button class="btn danger sm" data-del="${m.id}">Delete</button></div></div>`).join('') : '<p class="hint">No messages yet.</p>'}`;
-  main.querySelectorAll<HTMLElement>('[data-read]').forEach((b) => b.addEventListener('click', async () => { await api('PUT', `/messages/${b.dataset.read}`); viewMessages(main); }));
-  main.querySelectorAll<HTMLElement>('[data-del]').forEach((b) => b.addEventListener('click', async () => { if (await confirmBox('Delete this message?', 'Delete')) { await api('DELETE', `/messages/${b.dataset.del}`); viewMessages(main); } }));
+const INBOX_TABS: [string, string][] = [['', 'To do'], ['new', 'New'], ['replied', 'Replied'], ['done', 'Done'], ['spam', 'Spam'], ['all', 'Everything']];
+const STATUS_LABEL: Record<string, string> = { new: 'New', open: 'Open', replied: 'Replied', done: 'Done', spam: 'Spam' };
+async function viewMessages(main: HTMLElement, tab = '') {
+  const r = await api<Any>('GET', `/messages${tab ? `?status=${tab}` : ''}`);
+  const n = (k: string) => (r.counts[k] ? ` <span class="hint">${r.counts[k]}</span>` : '');
+  main.innerHTML = `<div class="head"><div><h1>Inbox</h1><div class="sub">Everything people send through the forms on your site. Each one is emailed to you as well.</div></div>
+    ${can('mail.manage') ? '<button class="btn ghost" id="mailset">Email settings</button>' : ''}</div>
+    ${r.mail ? '' : '<div class="warn" style="margin-bottom:16px">Email is not switched on yet, so new messages only show here for now.</div>'}
+    <div class="tabs">${INBOX_TABS.map(([k, l]) => `<button data-s="${k}" class="${k === tab ? 'on' : ''}">${l}${k && k !== 'all' ? n(k) : ''}</button>`).join('')}</div>
+    ${r.items.length ? `<div class="card" style="padding:0;overflow-x:auto"><table><thead><tr><th>From</th><th>Message</th><th>Status</th><th>When</th></tr></thead><tbody>
+    ${r.items.map((m: Any) => `<tr class="click" data-id="${m.id}"><td><b>${esc(m.name)}</b><div class="hint">${esc(m.email)}</div></td>
+      <td>${m.status === 'new' ? '<b>' : ''}${esc(m.body.slice(0, 120))}${m.body.length > 120 ? '...' : ''}${m.status === 'new' ? '</b>' : ''}${m.form !== 'contact' ? `<div class="hint mono">${esc(m.form)} form</div>` : ''}</td>
+      <td><span class="pill ${m.status}">${STATUS_LABEL[m.status] || m.status}</span></td><td class="hint">${ago(m.created_at)}</td></tr>`).join('')}
+    </tbody></table></div>` : `<div class="soon"><h2>${tab ? 'Nothing here' : 'All caught up'}</h2><p class="hint">New form messages land here and in your email.</p></div>`}`;
+  main.querySelectorAll<HTMLElement>('.tabs button').forEach((b) => b.addEventListener('click', () => viewMessages(main, b.dataset.s)));
+  main.querySelectorAll<HTMLElement>('tr.click').forEach((tr) => tr.addEventListener('click', () => go(`/admin/messages/${tr.dataset.id}`)));
+  $('#mailset')?.addEventListener('click', mailSettings);
+}
+
+async function viewMessage(main: HTMLElement, id: number) {
+  const m = await api<Any>('GET', `/messages/${id}`);
+  const extras = m.data ? Object.entries(m.data).map(([k, v]) => `<div><span class="mono hint">${esc(k)}</span><div>${esc(v)}</div></div>`).join('') : '';
+  const statusBtns = ['open', 'done', 'spam'].filter((s) => s !== m.status).map((s) => `<button class="btn ghost sm" data-st="${s}">${s === 'open' ? 'Reopen' : s === 'done' ? 'Mark done' : 'Spam'}</button>`).join('');
+  main.innerHTML = `<div class="head"><div><a href="/admin/messages" data-link class="hint">Inbox</a><h1>${esc(m.name)}</h1>
+    <div class="sub"><a href="mailto:${esc(m.email)}">${esc(m.email)}</a> &middot; ${esc(m.form)} form on ${esc(m.page || '/')} &middot; ${ago(m.created_at)}</div></div>
+    <div class="row"><span class="pill ${m.status}">${STATUS_LABEL[m.status] || m.status}</span>${can('messages.reply') ? statusBtns : ''}${can('messages.delete') ? '<button class="btn danger sm" id="del">Delete</button>' : ''}</div></div>
+    <div class="grid" style="gap:16px">
+      <div class="card"><p style="white-space:pre-wrap;margin:0">${esc(m.body)}</p>${extras ? `<div class="grid" style="gap:10px;margin-top:16px">${extras}</div>` : ''}
+        <p class="hint mono" style="margin:14px 0 0">${m.emailed ? 'Emailed to you' : 'Not emailed'}</p></div>
+      ${m.replies.map((x: Any) => `<div class="card" style="margin-left:24px;border-color:${x.ok ? 'var(--line)' : 'var(--danger)'}"><div class="hint mono" style="margin-bottom:8px">${x.ok ? 'Replied' : 'Did not send'} by ${esc(x.by_name || 'someone')}, ${ago(x.created_at)}</div><p style="white-space:pre-wrap;margin:0">${esc(x.body)}</p>${x.error ? `<p class="hint">${esc(x.error)}</p>` : ''}</div>`).join('')}
+      ${can('messages.reply') ? `<div class="card"><label class="f"><span>Reply by email</span><textarea id="reply" rows="6" placeholder="Kia ora ${esc(m.name.split(' ')[0])},"></textarea></label>
+        <div class="row" style="justify-content:space-between"><span class="hint">${m.mail ? `Sends to ${esc(m.email)}. Their reply comes back to your email.` : 'Email is not switched on yet.'}</span><button class="btn" id="send" ${m.mail ? '' : 'disabled'}>Send reply</button></div></div>
+      <div class="card"><label class="f"><span>Private notes</span><textarea id="notes" rows="3" placeholder="Only people in Studio see this.">${esc(m.notes || '')}</textarea></label><button class="btn ghost sm" id="savenotes">Save notes</button></div>` : ''}
+    </div>`;
+  const reply = $('#reply') as HTMLTextAreaElement | null;
+  reply?.addEventListener('input', () => { const v = noDash(reply.value); if (v !== reply.value) { const p = reply.selectionStart; reply.value = v; reply.selectionStart = reply.selectionEnd = Math.max(0, p - 1); } });
+  main.querySelectorAll<HTMLElement>('[data-st]').forEach((b) => b.addEventListener('click', async () => { try { await api('PUT', `/messages/${id}`, { status: b.dataset.st }); toast('Updated.'); viewMessage(main, id); } catch (e) { fail(e); } }));
+  $('#del')?.addEventListener('click', async () => { if (await confirmBox('Delete this message for good?', 'Delete')) { await api('DELETE', `/messages/${id}`); go('/admin/messages'); } });
+  $('#savenotes')?.addEventListener('click', async () => { try { await api('PUT', `/messages/${id}`, { notes: ($('#notes') as HTMLTextAreaElement).value }); toast('Notes saved.'); } catch (e) { fail(e); } });
+  $('#send')?.addEventListener('click', async () => {
+    const btn = $('#send') as HTMLButtonElement;
+    if (!reply!.value.trim()) return toast('Write a reply first.', true);
+    await busy(btn, 'Sending...', async () => { try { await api('POST', `/messages/${id}/reply`, { body: reply!.value }); toast('Reply sent.'); viewMessage(main, id); } catch (e) { fail(e); viewMessage(main, id); } });
+  });
+}
+
+async function mailSettings() {
+  const r = await api<Any>('GET', '/mail');
+  const m = modal('Email', `<p style="margin:0 0 10px"><span class="pill ${r.ready ? 'published' : 'review'}">${r.ready ? 'Working' : 'Not set up'}</span></p>
+    <p class="hint" style="margin:0 0 6px">Sends from <b>${esc(r.from)}</b></p><p class="hint" style="margin:0 0 16px">Form messages go to <b>${esc(r.to || 'nobody yet')}</b>. Change it under Site details.</p>
+    <button class="btn" id="testmail" ${r.ready ? '' : 'disabled'}>Send me a test email</button>
+    <h3 style="margin:20px 0 8px;font-size:14px">Recent emails</h3>
+    ${r.log.length ? `<div style="max-height:240px;overflow:auto">${r.log.map((l: Any) => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:6px 0"><span>${esc(l.subject)}<div class="hint">${esc(l.to_addr)}</div></span><span class="hint mono">${l.ok ? 'sent' : 'failed'} ${ago(l.created_at)}</span></div>`).join('')}</div>` : '<p class="hint">None yet.</p>'}`);
+  m.el.querySelector<HTMLButtonElement>('#testmail')?.addEventListener('click', async (e) => {
+    await busy(e.currentTarget as HTMLButtonElement, 'Sending...', async () => { try { const x = await api('POST', '/mail/test'); toast(`Test sent to ${x.to}.`); } catch (err) { fail(err); } });
+  });
 }
 
 
@@ -807,6 +866,99 @@ async function aiLogo(kind: 'logo' | 'favicon', onUse: (key: string) => void) {
   }));
 }
 
+
+// ---------- People and roles ----------
+async function viewPeople(main: HTMLElement, tab = 'people') {
+  const tabs = [['people', 'People', 'users.manage'], ['roles', 'Roles', 'users.manage'], ['activity', 'Activity', 'audit.view']].filter((t) => can(t[2]));
+  main.innerHTML = `<div class="head"><div><h1>People</h1><div class="sub">Who can sign in to Studio, and what each role lets them do.</div></div><div id="pp-act"></div></div>
+    <div class="tabs">${tabs.map(([id, l]) => `<button data-tab="${id}" class="${id === tab ? 'on' : ''}">${l}</button>`).join('')}</div><div id="pp"></div>`;
+  main.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.addEventListener('click', () => viewPeople(main, b.dataset.tab)));
+  const box = $('#pp'), act = $('#pp-act');
+  if (tab === 'people') {
+    const [users, roles] = await Promise.all([api<Any[]>('GET', '/people/users'), api<Any[]>('GET', '/people/roles')]);
+    const roleName = (id: number) => roles.find((r) => r.id === id)?.name || '?';
+    act.innerHTML = '<button class="btn" id="add-person">Add a person</button>';
+    box.innerHTML = `<div class="card" style="padding:0;overflow-x:auto"><table><thead><tr><th>Name</th><th>Roles</th><th>Status</th><th>Last signed in</th></tr></thead><tbody>
+      ${users.map((u) => `<tr class="click" data-id="${u.id}"><td><b>${esc(u.name || u.email)}</b><div class="hint">${esc(u.email)}</div></td>
+        <td>${u.roles.map((r: number) => `<span class="pill" style="margin:2px">${esc(roleName(r))}</span>`).join('') || '<span class="hint">No role</span>'}</td>
+        <td>${u.active ? (u.must_change_password ? '<span class="pill review">Invited</span>' : '<span class="pill published">Active</span>') : '<span class="pill">Switched off</span>'}</td>
+        <td class="hint">${u.last_login ? ago(u.last_login) : 'Never'}</td></tr>`).join('')}</tbody></table></div>`;
+    const roleChecks = (sel: number[]) => `<div class="grid" style="gap:6px;margin-bottom:14px">${roles.filter((r) => r.name !== 'Owner' || ME.perms.includes('*')).map((r) => `<label class="row" style="align-items:flex-start;gap:8px"><input type="checkbox" name="role" value="${r.id}" ${sel.includes(r.id) ? 'checked' : ''} style="margin-top:4px"><span><b>${esc(r.name)}</b><br><span class="hint">${esc(r.description)}</span></span></label>`).join('')}</div>`;
+    const showPassword = (email: string, pw: string) => {
+      const m = modal('Login details', `<p>Give these to them privately. They'll be asked to pick their own password when they first sign in.</p>
+        <div class="card" style="font-family:var(--mono);user-select:all;margin:12px 0">Address: ${esc(location.origin)}/admin<br>Email: ${esc(email)}<br>Temporary password: ${esc(pw)}</div>
+        <div class="row"><button class="btn" id="cp">Copy</button><button class="btn ghost" data-close>Done</button></div>`);
+      m.el.querySelector('#cp')!.addEventListener('click', () => navigator.clipboard.writeText(`Address: ${location.origin}/admin\nEmail: ${email}\nTemporary password: ${pw}`).then(() => toast('Copied.'), () => toast('Select the text and copy it.', true)));
+    };
+    $('#add-person').addEventListener('click', () => {
+      const m = modal('Add a person', `<form><label class="f"><span>Name</span><input type="text" id="np-name"></label><label class="f"><span>Email</span><input type="email" id="np-email" required></label>
+        <div class="mono hint" style="margin-bottom:8px">Roles</div>${roleChecks([])}<button class="btn">Add and create login</button></form>`);
+      m.el.querySelector('form')!.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const rolesSel = [...m.el.querySelectorAll<HTMLInputElement>('[name=role]:checked')].map((i) => Number(i.value));
+        try { const r = await api('POST', '/people/users', { name: ($('#np-name') as HTMLInputElement).value, email: ($('#np-email') as HTMLInputElement).value, roles: rolesSel }); m.close(); showPassword(($('#np-email') as HTMLInputElement)?.value || '', r.password); viewPeople(main, 'people'); } catch (err) { fail(err); }
+      });
+    });
+    box.querySelectorAll<HTMLElement>('tr.click').forEach((tr) => tr.addEventListener('click', () => {
+      const u = users.find((x) => String(x.id) === tr.dataset.id)!;
+      const m = modal(u.name || u.email, `<form><label class="f"><span>Name</span><input type="text" id="ep-name" value="${esc(u.name)}"></label><p class="hint">${esc(u.email)}</p>
+        <div class="mono hint" style="margin-bottom:8px">Roles</div>${roleChecks(u.roles)}
+        <label class="row" style="margin-bottom:16px"><input type="checkbox" id="ep-active" ${u.active ? 'checked' : ''}> Can sign in</label>
+        <div class="row"><button class="btn">Save</button><button type="button" class="btn ghost" id="ep-reset">New temporary password</button>${u.id !== ME.id ? '<button type="button" class="btn danger" id="ep-del">Remove</button>' : ''}</div></form>`);
+      m.el.querySelector('form')!.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        try { await api('PUT', `/people/users/${u.id}`, { name: ($('#ep-name') as HTMLInputElement).value, active: ($('#ep-active') as HTMLInputElement).checked, roles: [...m.el.querySelectorAll<HTMLInputElement>('[name=role]:checked')].map((i) => Number(i.value)) }); m.close(); toast('Saved.'); viewPeople(main, 'people'); } catch (err) { fail(err); }
+      });
+      m.el.querySelector('#ep-reset')!.addEventListener('click', async () => { try { const r = await api('PUT', `/people/users/${u.id}`, { resetPassword: true }); m.close(); showPassword(u.email, r.password); } catch (err) { fail(err); } });
+      m.el.querySelector('#ep-del')?.addEventListener('click', async () => { if (await confirmBox(`Remove ${u.email}? Their login stops working straight away.`, 'Remove')) { try { await api('DELETE', `/people/users/${u.id}`); m.close(); viewPeople(main, 'people'); } catch (err) { fail(err); } } });
+    }));
+  } else if (tab === 'roles') {
+    const [roles, catalogue] = await Promise.all([api<Any[]>('GET', '/people/roles'), api<Any[]>('GET', '/people/permissions')]);
+    act.innerHTML = can('roles.manage') ? '<button class="btn" id="add-role">New role</button>' : '';
+    box.innerHTML = `<div class="grid g4">${roles.map((r) => `<div class="card" data-role="${r.id}" style="cursor:${can('roles.manage') && r.name !== 'Owner' ? 'pointer' : 'default'}">
+      <div class="row" style="justify-content:space-between"><b style="font-size:17px">${esc(r.name)}</b>${r.system ? '<span class="pill">Built in</span>' : ''}</div>
+      <p class="hint" style="margin:6px 0 10px">${esc(r.description)}</p><span class="mono hint">${r.permissions.includes('*') ? 'Everything' : `${r.permissions.length} permissions`}, ${r.members} ${r.members === 1 ? 'person' : 'people'}</span></div>`).join('')}</div>`;
+    const editor = (r: Any | null) => {
+      const perms: string[] = r?.permissions || [];
+      const m = modal(r ? `Edit ${r.name}` : 'New role', `<form>
+        <label class="f"><span>Name</span><input type="text" id="rl-name" value="${esc(r?.name || '')}" ${r?.system ? 'disabled' : ''} required placeholder="e.g. Social media helper"></label>
+        <label class="f"><span>What it's for</span><input type="text" id="rl-desc" value="${esc(r?.description || '')}"></label>
+        ${catalogue.map((g) => `<div class="item"><label class="row" style="justify-content:space-between;margin-bottom:6px"><b>${esc(g.group)}</b><span class="hint"><input type="checkbox" data-all="${esc(g.group)}"> All</span></label>
+          ${g.items.map((p: Any) => `<label class="row" style="gap:8px;margin:4px 0"><input type="checkbox" name="perm" data-g="${esc(g.group)}" value="${p.id}" ${perms.includes(p.id) ? 'checked' : ''}> ${esc(p.label)}</label>`).join('')}</div>`).join('')}
+        <div class="row"><button class="btn">${r ? 'Save role' : 'Create role'}</button>${r && !r.system ? '<button type="button" class="btn danger" id="rl-del">Delete role</button>' : ''}</div></form>`);
+      m.el.querySelectorAll<HTMLInputElement>('[data-all]').forEach((a) => {
+        const items = () => [...m.el.querySelectorAll<HTMLInputElement>(`[name=perm][data-g="${CSS.escape(a.dataset.all!)}"]`)];
+        a.checked = items().every((i) => i.checked);
+        a.addEventListener('change', () => items().forEach((i) => (i.checked = a.checked)));
+      });
+      m.el.querySelector('form')!.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const body = { name: ($('#rl-name') as HTMLInputElement).value, description: ($('#rl-desc') as HTMLInputElement).value, permissions: [...m.el.querySelectorAll<HTMLInputElement>('[name=perm]:checked')].map((i) => i.value) };
+        try { r ? await api('PUT', `/people/roles/${r.id}`, body) : await api('POST', '/people/roles', body); m.close(); toast('Saved.'); viewPeople(main, 'roles'); } catch (err) { fail(err); }
+      });
+      m.el.querySelector('#rl-del')?.addEventListener('click', async () => { if (await confirmBox(`Delete the ${r!.name} role? People with it lose what it allowed.`, 'Delete role')) { try { await api('DELETE', `/people/roles/${r!.id}`); m.close(); viewPeople(main, 'roles'); } catch (err) { fail(err); } } });
+    };
+    $('#add-role')?.addEventListener('click', () => editor(null));
+    if (can('roles.manage')) box.querySelectorAll<HTMLElement>('[data-role]').forEach((el) => el.addEventListener('click', () => { const r = roles.find((x) => String(x.id) === el.dataset.role)!; if (r.name !== 'Owner') editor(r); else toast('The Owner role always has every permission.'); }));
+  } else {
+    const log = await api<Any[]>('GET', '/people/audit');
+    act.innerHTML = '';
+    box.innerHTML = log.length ? `<div class="card" style="padding:0;overflow-x:auto"><table><tbody>${log.map((l) => `<tr><td class="hint">${ago(l.created_at)}</td><td>${esc(l.name || l.email || 'Someone')}</td><td class="mono">${esc(l.action)}</td><td class="hint">${esc(l.detail)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="hint">Nothing yet.</p>';
+  }
+}
+
+async function viewAccount(main: HTMLElement, forced = false) {
+  main.innerHTML = `<div class="head"><div><h1>${forced ? 'Pick your password' : 'Your account'}</h1><div class="sub">${forced ? 'You signed in with a temporary password. Choose your own to carry on.' : esc(ME.email)}</div></div></div>
+    <div class="grid" style="max-width:560px">${forced ? '' : `<div class="card"><label class="f"><span>Your name</span><input type="text" id="ac-name" value="${esc(ME.name)}"></label><button class="btn" id="ac-save">Save</button></div>`}
+    <form class="card" id="ac-pw"><label class="f"><span>Current password</span><input type="password" id="ac-cur" autocomplete="current-password" required></label>
+      <label class="f"><span>New password (10 characters or more)</span><input type="password" id="ac-new" autocomplete="new-password" minlength="10" required></label><button class="btn">Change password</button></form></div>`;
+  $('#ac-save')?.addEventListener('click', async () => { try { await api('PUT', '/people/me', { name: ($('#ac-name') as HTMLInputElement).value }); toast('Saved.'); } catch (e) { fail(e); } });
+  $('#ac-pw').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try { await api('PUT', '/people/me/password', { current: ($('#ac-cur') as HTMLInputElement).value, next: ($('#ac-new') as HTMLInputElement).value }); toast('Password changed.'); if (forced) boot(); } catch (err) { fail(err); }
+  });
+}
+
 // ---------- Coming next ----------
 const SOON: Record<string, { title: string; body: string; items: string[] }> = {
   ideas: { title: 'Create Ideas', body: 'Your own knowledge base turns into post ideas you can review, edit and publish.', items: ['Add notes, documents, links and past posts', 'One click for fresh post ideas grounded in what you know', 'Turn any idea into a full draft and social versions', 'Everything waits in "To review" until you approve it'] },
@@ -823,7 +975,9 @@ function viewSoon(main: HTMLElement, s: { title: string; body: string; items: st
 async function boot() {
   const me = await fetch('/api/auth/me').then((r) => r.json()).catch(() => ({ signedIn: false }));
   if (!me.signedIn) return renderLogin();
+  ME = me.user;
   $('#app').innerHTML = '';
+  if (ME.mustChange) { shell(); return viewAccount($('#main'), true); }
   route();
 }
 boot();

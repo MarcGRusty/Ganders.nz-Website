@@ -6,6 +6,11 @@ export interface Env {
   APP_KEY: string;      // secret: encrypts stored API keys
   AI?: Ai;              // Cloudflare Workers AI (free fallback)
   MOCK_AI?: string;     // local testing only: '1' answers with canned text
+  RESEND_API_KEY?: string; // secret: sends email through Resend
+  MAIL_FROM?: string;   // sender address, e.g. NoReply@ganders.nz
+  OWNER_EMAIL?: string; // the Owner's sign-in and where form emails go
+  ADMIN_PASSWORD?: string; // secret: first sign-in password for OWNER_EMAIL
+  MOCK_MAIL?: string;   // local testing only: '1' logs email instead of sending
 }
 
 export interface Theme {

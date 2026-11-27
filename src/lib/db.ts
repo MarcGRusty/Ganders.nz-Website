@@ -1,5 +1,5 @@
 import type { Env, Page, Post, SiteSettings } from '../types';
-import { DEFAULT_SETTINGS, DEFAULT_HOME } from './defaults';
+import { DEFAULT_SETTINGS, DEFAULT_HOME, DEFAULT_ABOUT, DEFAULT_CONTACT } from './defaults';
 
 const parsePage = (r: any): Page => ({ ...r, blocks: JSON.parse(r.blocks || '[]'), seo: JSON.parse(r.seo || '{}') });
 const parsePost = (r: any): Post => ({ ...r, tags: JSON.parse(r.tags || '[]') });
@@ -18,13 +18,25 @@ export async function saveSettings(env: Env, s: SiteSettings) {
   await snapshot(env, 'settings', 0, s);
 }
 
-/** Make sure a home page exists so a fresh install shows something. */
+let seeded = false;
+/**
+ * First run: create the starter pages (Home, About, Contact). Runs once per install, so a page
+ * Marc deletes later stays deleted. Home always exists.
+ */
 export async function ensureSeed(env: Env) {
-  const home = await env.DB.prepare("SELECT id FROM pages WHERE slug = 'home'").first();
-  if (!home) {
-    await env.DB.prepare("INSERT INTO pages (slug, title, status, blocks) VALUES ('home', 'Home', 'published', ?)")
-      .bind(JSON.stringify(DEFAULT_HOME)).run();
+  if (seeded) return;
+  const done = await env.DB.prepare("SELECT 1 FROM settings WHERE key = 'seeded'").first();
+  const starters: [string, string, number, number, unknown][] = [
+    ['home', 'Home', 0, 0, DEFAULT_HOME],
+    ['about', 'About', 1, 10, DEFAULT_ABOUT],
+    ['contact', 'Contact', 1, 90, DEFAULT_CONTACT],
+  ];
+  for (const [slug, title, inMenu, order, blocks] of done ? starters.slice(0, 1) : starters) {
+    await env.DB.prepare("INSERT OR IGNORE INTO pages (slug, title, status, in_menu, menu_order, blocks) VALUES (?, ?, 'published', ?, ?, ?)")
+      .bind(slug, title, inMenu, order, JSON.stringify(blocks)).run();
   }
+  if (!done) await env.DB.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('seeded', '1')").run();
+  seeded = true;
 }
 
 export async function getPage(env: Env, slug: string, includeDrafts = false): Promise<Page | null> {
@@ -40,8 +52,11 @@ export async function listPages(env: Env) {
   return results.map(parsePage);
 }
 export async function menuPages(env: Env) {
-  const { results } = await env.DB.prepare("SELECT slug, title FROM pages WHERE status = 'published' AND in_menu = 1 ORDER BY menu_order, title").all<{ slug: string; title: string }>();
-  return results;
+  const { results } = await env.DB.prepare("SELECT slug, title, menu_order FROM pages WHERE status = 'published' AND in_menu = 1 AND slug != 'home' ORDER BY menu_order, title").all<{ slug: string; title: string; menu_order: number }>();
+  // Writing is built in and sits at position 50, so pages can go before or after it.
+  return [{ slug: '', title: 'Home', menu_order: -1 }, ...results, { slug: 'writing', title: 'Writing', menu_order: 50 }]
+    .sort((a, b) => a.menu_order - b.menu_order)
+    .map(({ slug, title }) => ({ slug, title }));
 }
 
 export async function listPosts(env: Env, opts: { status?: string; limit?: number } = {}) {

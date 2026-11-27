@@ -49,14 +49,44 @@ export async function currentUser(c: Context<any>) {
   return uid ? Number(uid) : null;
 }
 
-export async function requireAuth(c: Context<{ Bindings: Env; Variables: { uid: number } }>, next: Next) {
+export interface SessionUser { id: number; email: string; name: string; perms: Set<string>; mustChange: boolean }
+
+/** Who is signed in, and everything their roles allow. Inactive people are treated as signed out. */
+export async function loadUser(c: Context<any>): Promise<SessionUser | null> {
   const uid = await currentUser(c);
-  if (!uid) return c.json({ error: 'Please sign in.' }, 401);
+  if (!uid) return null;
+  const u = await c.env.DB.prepare('SELECT id, email, name, active, must_change_password FROM users WHERE id = ?').bind(uid).first();
+  if (!u || !u.active) return null;
+  const env = c.env as Env;
+  const { results } = await env.DB.prepare('SELECT r.permissions FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = ?').bind(uid).all<{ permissions: string }>();
+  const perms = new Set<string>(results.flatMap((r) => JSON.parse(r.permissions || '[]')));
+  return { id: u.id as number, email: u.email as string, name: (u.name as string) || '', perms, mustChange: !!u.must_change_password };
+}
+
+export async function requireAuth(c: Context<any>, next: Next) {
+  const user = await loadUser(c);
+  if (!user) return c.json({ error: 'Please sign in.' }, 401);
   // Basic CSRF protection for state-changing requests.
   if (c.req.method !== 'GET') {
     const origin = c.req.header('origin');
     if (origin && new URL(origin).host !== new URL(c.req.url).host) return c.json({ error: 'Bad origin.' }, 403);
   }
-  c.set('uid', uid);
+  c.set('uid', user.id);
+  c.set('user', user);
   await next();
+}
+
+export const can = (c: Context<any>, perm: string) => {
+  const u = c.get('user') as SessionUser | undefined;
+  return !!u && (u.perms.has('*') || u.perms.has(perm));
+};
+
+/** Route guard: `need('pages.edit')`. */
+export const need = (...perms: string[]) => async (c: Context<any>, next: Next) => {
+  if (!perms.every((p) => can(c, p))) return c.json({ error: 'Your role does not allow this. Ask the site owner if you need it.' }, 403);
+  await next();
+};
+
+export async function audit(c: Context<any>, action: string, detail = '') {
+  await c.env.DB.prepare('INSERT INTO audit_log (user_id, action, detail) VALUES (?, ?, ?)').bind(c.get('uid') ?? null, action, detail.slice(0, 500)).run().catch(() => {});
 }

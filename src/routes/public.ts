@@ -5,6 +5,7 @@ import { renderBlocks } from '../render/blocks';
 import { layout } from '../render/layout';
 import { esc, clean, mediaUrl, fmtDate } from '../render/html';
 import { currentUser } from '../lib/auth';
+import { sendMail, mailReady, ownerAddress, wrapHtml, textToHtml } from '../lib/mail';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -12,7 +13,7 @@ const site = (c: any) => (c.env.SITE_URL || new URL(c.req.url).origin).replace(/
 
 async function renderPage(c: any, slug: string) {
   const edit = c.req.query('edit') === '1' && !!(await currentUser(c));
-  if (slug === 'home') await ensureSeed(c.env);
+  await ensureSeed(c.env);
   const page = await getPage(c.env, slug, edit);
   if (!page) return notFound(c);
   const [s, menu, posts] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 })]);
@@ -94,22 +95,46 @@ app.get('/rss.xml', async (c) => {
 
 app.post('/contact', async (c) => {
   const f = await c.req.parseBody();
-  if (f.website) return c.redirect('/?sent=1#contact', 303); // honeypot
+  // Only ever send people back to a page on this site.
+  const b = String(f.back || '/');
+  const back = /^\/[a-z0-9\-\/]*$/i.test(b) && !b.startsWith('//') ? b : '/';
+  if (f.website) return c.redirect('/?sent=1', 303); // honeypot
   const name = String(f.name || '').slice(0, 120).trim();
   const email = String(f.email || '').slice(0, 200).trim();
   const body = String(f.body || '').slice(0, 5000).trim();
-  if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !body) return c.redirect('/?sent=0#contact', 303);
+  if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !body) return c.redirect(`${back}?sent=0#contact`, 303);
   // Simple rate limit: 5 messages per IP per hour.
   const ip = c.req.header('cf-connecting-ip') || 'local';
   const k = `rl:contact:${ip}`;
   const count = Number((await c.env.KV.get(k)) || 0);
-  if (count >= 5) return c.redirect('/?sent=0#contact', 303);
+  if (count >= 5) return c.redirect(`${back}?sent=0#contact`, 303);
   await c.env.KV.put(k, String(count + 1), { expirationTtl: 3600 });
-  await c.env.DB.prepare('INSERT INTO messages (name, email, body) VALUES (?, ?, ?)').bind(name, email, body).run();
-  const ref = c.req.header('referer');
-  const back = ref && new URL(ref).host === new URL(c.req.url).host ? new URL(ref).pathname : '/';
+  // Any extra fields a form carries are kept too, so new forms need no code changes.
+  const skip = new Set(['name', 'email', 'body', 'back', 'website', 'form']);
+  const extra: Record<string, string> = {};
+  for (const [key, v] of Object.entries(f)) if (!skip.has(key) && typeof v === 'string' && Object.keys(extra).length < 30) extra[key.slice(0, 60)] = v.slice(0, 2000);
+  const form = String(f.form || 'contact').replace(/[^a-z0-9-]/gi, '').slice(0, 40) || 'contact';
+  const row = await c.env.DB.prepare('INSERT INTO messages (name, email, body, form, page, data) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+    .bind(name, email, body, form, back, Object.keys(extra).length ? JSON.stringify(extra) : null).first<{ id: number }>();
+  c.executionCtx.waitUntil(notifyOwner(c.env, new URL(c.req.url).origin, row!.id, { name, email, body, form, page: back, extra }));
   return c.redirect(`${back}?sent=1#contact`, 303);
 });
+
+async function notifyOwner(env: Env, origin: string, id: number, m: { name: string; email: string; body: string; form: string; page: string; extra: Record<string, string> }) {
+  const settings = await getSettings(env);
+  const to = await ownerAddress(env, settings.email);
+  if (!to || !mailReady(env)) return;
+  const studio = `${origin}/admin/messages/${id}`;
+  const extras = Object.entries(m.extra).map(([k, v]) => `${k}: ${v}`).join('\n');
+  const text = `${m.name} (${m.email}) wrote through the ${m.form} form on ${m.page}:\n\n${m.body}${extras ? `\n\n${extras}` : ''}\n\nReply straight to this email, or open it in Studio: ${studio}`;
+  const html = wrapHtml(`<p style="margin:0 0 6px;color:#55646B;font-size:13px">New message from your ${esc(m.form)} form</p>
+<h2 style="margin:0 0 4px;font-size:20px">${esc(m.name)}</h2><p style="margin:0 0 18px"><a href="mailto:${esc(m.email)}" style="color:#1F5F6B">${esc(m.email)}</a></p>
+${textToHtml(m.body)}${extras ? `<p style="margin:0 0 14px;color:#55646B;white-space:pre-wrap">${esc(extras)}</p>` : ''}
+<p style="margin:22px 0 0"><a href="${esc(studio)}" style="display:inline-block;background:#0E1B22;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px">Open in Studio</a></p>`,
+    'Reply to this email to answer them directly.');
+  const r = await sendMail(env, { to, subject: `New message from ${m.name}`, text, html, replyTo: m.email, kind: 'form' }, settings.name);
+  if (r.ok) await env.DB.prepare('UPDATE messages SET emailed = 1 WHERE id = ?').bind(id).run();
+}
 
 app.get('/:slug{[a-z0-9-]+}', (c) => renderPage(c, c.req.param('slug')));
 
