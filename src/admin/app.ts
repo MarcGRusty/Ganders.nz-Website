@@ -689,8 +689,8 @@ async function viewPostEditor(main: HTMLElement, id: number) {
 
 // ---------- Design ----------
 const FONT_CHOICES = {
-  display: ['Archivo', 'Newsreader', 'Bricolage Grotesque', 'Big Shoulders Display', 'Shrikhand', 'Fraunces', 'Instrument Serif', 'Syne', 'Unbounded', 'DM Serif Display', 'Familjen Grotesk', 'Gloock', 'Young Serif', 'Space Grotesk'],
-  body: ['Atkinson Hyperlegible', 'Newsreader', 'Figtree', 'Geist', 'Work Sans', 'Hanken Grotesk', 'Instrument Sans', 'Source Serif 4', 'Public Sans'],
+  display: ['Archivo', 'Montserrat', 'Newsreader', 'Bricolage Grotesque', 'Big Shoulders Display', 'Shrikhand', 'Fraunces', 'Instrument Serif', 'Syne', 'Unbounded', 'DM Serif Display', 'Familjen Grotesk', 'Gloock', 'Young Serif', 'Space Grotesk'],
+  body: ['Atkinson Hyperlegible', 'Montserrat', 'Newsreader', 'Figtree', 'Geist', 'Work Sans', 'Hanken Grotesk', 'Instrument Sans', 'Source Serif 4', 'Public Sans'],
   mono: ['IBM Plex Mono', 'JetBrains Mono', 'Geist Mono', 'DM Mono', 'Space Mono', 'Martian Mono'],
 };
 const PAL_FIELDS: [string, string][] = [['paper', 'Background'], ['surface', 'Cards and panels'], ['ink', 'Text'], ['muted', 'Quiet text'], ['line', 'Lines'], ['accent', 'Accent'], ['onAccent', 'Text on accent'], ['accent2', 'Second accent']];

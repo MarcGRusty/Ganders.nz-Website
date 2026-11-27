@@ -97,6 +97,7 @@ export const FONT_SPECS: Record<string, string> = {
   'Martian Mono': 'wght@400..600',
   'Space Grotesk': 'wght@400..700',
   'Caveat': 'wght@400..700',
+  'Montserrat': 'ital,wght@0,400..800;1,400..800',
 };
 
 const HEX = /^#[0-9a-f]{6}$/i;
