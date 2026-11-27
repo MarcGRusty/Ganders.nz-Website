@@ -3,3 +3,4 @@ node_modules/
 .dev.vars
 public/admin/assets/app.js
 *.log
+wrangler.local.jsonc

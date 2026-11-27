@@ -3,6 +3,9 @@ export interface Env {
   MEDIA: R2Bucket;
   KV: KVNamespace;
   SITE_URL: string;
+  APP_KEY: string;      // secret: encrypts stored API keys
+  AI?: Ai;              // Cloudflare Workers AI (free fallback)
+  MOCK_AI?: string;     // local testing only: '1' answers with canned text
 }
 
 export interface Theme {

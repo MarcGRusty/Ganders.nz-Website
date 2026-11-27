@@ -1,3 +1,4 @@
+import aiRoutes from './ai';
 import { renderBlocks } from '../render/blocks';
 import { layout } from '../render/layout';
 import { menuPages } from '../lib/db';
@@ -48,6 +49,8 @@ api.post('/auth/logout', async (c) => { await endSession(c); return c.json({ ok:
 
 // Everything below needs a signed-in owner.
 api.use('/*', async (c, next) => (c.req.path.startsWith('/api/auth/') ? next() : requireAuth(c, next)));
+
+api.route('/ai', aiRoutes);
 
 // ---------- Settings ----------
 api.get('/settings', async (c) => c.json(await getSettings(c.env)));

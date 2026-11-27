@@ -97,7 +97,7 @@ const NAV: [string, string, string?][] = [
   ['/admin/design', 'Design'],
   ['/admin/settings', 'Site details'],
   ['/admin/messages', 'Messages'],
-  ['/admin/ai', 'AI providers', 'Next'],
+  ['/admin/ai', 'AI providers'],
   ['/admin/ideas', 'Create Ideas', 'Soon'],
   ['/admin/social', 'Social', 'Soon'],
   ['/admin/integrations', 'Integrations', 'Soon'],
@@ -140,6 +140,7 @@ async function route() {
     if (path === '/admin/design') return await viewDesign(main);
     if (path === '/admin/settings') return await viewSettings(main);
     if (path === '/admin/messages') return await viewMessages(main);
+    if (path === '/admin/ai') return await viewAi(main);
     const soon = SOON[path.split('/')[2]];
     if (soon) return viewSoon(main, soon);
     main.innerHTML = '<div class="head"><h1>Not found</h1></div>';
@@ -474,6 +475,10 @@ async function viewPostEditor(main: HTMLElement, id: number) {
       <div class="card"><label class="f"><span>Cover image</span><div id="cover"></div></label></div>
       <div class="card"><label class="f"><span>Tags</span><input type="text" id="tags" value="${esc(post.tags.join(', '))}" placeholder="security, travel"></label>
         <label class="f" style="margin:0"><span>Address</span><input type="text" id="slug" value="${esc(post.slug)}"></label></div>
+      <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:10px"><span class="mono hint">Write with AI</span><span id="ai-pick-wrap"></span></div>
+        <div class="grid" style="gap:8px"><button type="button" class="btn ghost sm" id="ai-draft">Draft from my notes</button><button type="button" class="btn ghost sm" id="ai-improve">Improve the writing</button>
+        <button type="button" class="btn ghost sm" id="ai-titles">Suggest titles</button><button type="button" class="btn ghost sm" id="ai-excerpt">Write the summary line</button></div>
+        <p class="hint" style="margin:10px 0 0;font-size:13px">You see every suggestion before it goes in. Select text first to improve just that part.</p></div>
       <div class="card" id="check"><span class="mono hint">Style check</span><p class="hint" style="margin:6px 0 0">Em dashes are removed automatically when you save.</p></div>
     </aside></div>`;
 
@@ -572,6 +577,49 @@ async function viewPostEditor(main: HTMLElement, id: number) {
   $('#hist').addEventListener('click', () => showHistory('post', id, (d) => {
     ($('#title') as HTMLTextAreaElement).value = d.title; ($('#excerpt') as HTMLTextAreaElement).value = d.excerpt; editor.commands.setContent(d.body || ''); post.cover = d.cover; renderCover(); dirty = true;
   }));
+  // ----- AI writing help -----
+  aiPicker('ai-pick').then((h) => { $('#ai-pick-wrap').innerHTML = h; }).catch(() => { $('#ai-pick-wrap').innerHTML = '<a class="mono hint" href="/admin/ai" data-link>Set up AI</a>'; });
+  const choice = () => ($('#ai-pick') as HTMLSelectElement | null)?.value || 'default';
+  const ctx = () => ({ title: ($('#title') as HTMLTextAreaElement).value, excerpt: ($('#excerpt') as HTMLTextAreaElement).value, body: editor.getHTML() });
+  const hasBody = () => editor.getText().trim().length > 0;
+  $('#ai-draft').addEventListener('click', () => {
+    const m = modal('Draft from your notes', `<label class="f"><span>Rough notes, bullet points, anything</span><textarea id="ai-notes" rows="9" placeholder="What happened, what you think about it, a detail or two only you would know."></textarea></label><button class="btn" id="ai-go">Write a draft</button>`);
+    const go = m.el.querySelector('#ai-go') as HTMLButtonElement;
+    go.addEventListener('click', () => busy(go, 'Writing...', async () => {
+      try {
+        const r = await api('POST', '/ai/write', { action: 'draft', choice: choice(), ...ctx(), notes: ($('#ai-notes') as HTMLTextAreaElement).value });
+        m.close();
+        reviewResult('Your draft', r, true, hasBody()
+          ? [{ label: 'Replace what I have', run: () => { editor.commands.setContent(r.text); dirty = true; } }, { label: 'Add below', run: () => { editor.chain().focus('end').insertContent(r.text).run(); dirty = true; } }]
+          : [{ label: 'Use this', run: () => { editor.commands.setContent(r.text); dirty = true; } }]);
+      } catch (e) { fail(e); }
+    }));
+  });
+  const improve = $('#ai-improve') as HTMLButtonElement;
+  improve.addEventListener('click', () => busy(improve, 'Working...', async () => {
+    const { from, to, empty } = editor.state.selection;
+    const selection = empty ? '' : editor.state.doc.textBetween(from, to, '\n\n');
+    try {
+      const r = await api('POST', '/ai/write', { action: 'improve', choice: choice(), ...ctx(), selection });
+      reviewResult(selection ? 'Improved passage' : 'Improved post', r, true, [{ label: 'Use this', run: () => { selection ? editor.chain().focus().insertContentAt({ from, to }, r.text).run() : editor.commands.setContent(r.text); dirty = true; } }]);
+    } catch (e) { fail(e); }
+  }));
+  const titles = $('#ai-titles') as HTMLButtonElement;
+  titles.addEventListener('click', () => busy(titles, 'Thinking...', async () => {
+    try {
+      const r = await api('POST', '/ai/write', { action: 'titles', choice: choice(), ...ctx() });
+      const m = modal('Pick a title', `<div class="grid" style="gap:8px">${r.items.map((t: string, i: number) => `<button class="btn ghost" style="justify-content:flex-start;text-transform:none;font:500 16px/1.3 var(--body);letter-spacing:0" data-t="${i}">${esc(t)}</button>`).join('')}</div>${madeBy(r)}`);
+      m.el.querySelectorAll<HTMLElement>('[data-t]').forEach((b) => b.addEventListener('click', () => { const t = $('#title') as HTMLTextAreaElement; t.value = r.items[Number(b.dataset.t)]; t.dispatchEvent(new Event('input')); m.close(); }));
+    } catch (e) { fail(e); }
+  }));
+  const excerpt = $('#ai-excerpt') as HTMLButtonElement;
+  excerpt.addEventListener('click', () => busy(excerpt, 'Writing...', async () => {
+    try {
+      const r = await api('POST', '/ai/write', { action: 'excerpt', choice: choice(), ...ctx() });
+      reviewResult('Summary line', r, false, [{ label: 'Use this', run: () => { const t = $('#excerpt') as HTMLTextAreaElement; t.value = r.text; t.dispatchEvent(new Event('input')); } }]);
+    } catch (e) { fail(e); }
+  }));
+
   const keys = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); } };
   const bu = (e: BeforeUnloadEvent) => { if (dirty) e.preventDefault(); };
   window.addEventListener('keydown', keys); window.addEventListener('beforeunload', bu);
@@ -594,7 +642,7 @@ async function viewDesign(main: HTMLElement) {
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Logo and icon</div>
         <label class="f"><span>Logo (shown in the header)</span><div id="logo"></div></label>
         <label class="f"><span>Browser icon</span><div id="fav"></div></label>
-        <p class="hint" style="margin:0">No logo? Your name is shown in the display font. AI logo and icon generation arrives with the AI providers.</p></div>
+        <p class="hint" style="margin:0">No logo? Your name is shown in the display font.</p></div>
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Colour</div>${colour('paper', 'Background')}${colour('ink', 'Text')}${colour('muted', 'Quiet text')}${colour('accent', 'Accent')}${colour('accent2', 'Second accent')}</div>
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Type</div>${font('displayFont', 'Headings', FONT_CHOICES.display)}${font('bodyFont', 'Body text', FONT_CHOICES.body)}${font('monoFont', 'Labels', FONT_CHOICES.mono)}</div>
       <div class="panel"><div class="mono hint" style="margin-bottom:10px">Shape and motion</div>
@@ -616,8 +664,9 @@ async function viewDesign(main: HTMLElement) {
   ($('#motion') as HTMLInputElement).addEventListener('change', (e) => { t.motion = (e.target as HTMLInputElement).checked; });
   const slot = (id: string, key: 'logo' | 'favicon') => {
     const v = s[key];
-    $(`#${id}`).innerHTML = `<div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="height:40px;max-width:160px;object-fit:contain;background:${esc(t.paper)};padding:4px;border:1px solid var(--line);border-radius:3px">` : key === 'favicon' ? '<img src="/favicon.svg" alt="" style="height:32px">' : ''}<button type="button" class="btn ghost sm" data-k="pick">${v ? 'Change' : 'Upload or choose'}</button>${v ? '<button type="button" class="btn ghost sm" data-k="rm">Remove</button>' : ''}</div>${key === 'favicon' && !v ? '<small class="hint">Currently using a generated monogram in your colours.</small>' : ''}`;
+    $(`#${id}`).innerHTML = `<div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="height:40px;max-width:160px;object-fit:contain;background:${esc(t.paper)};padding:4px;border:1px solid var(--line);border-radius:3px">` : key === 'favicon' ? '<img src="/favicon.svg" alt="" style="height:32px">' : ''}<button type="button" class="btn ghost sm" data-k="pick">${v ? 'Change' : 'Upload or choose'}</button><button type="button" class="btn ghost sm" data-k="ai">Make with AI</button>${v ? '<button type="button" class="btn ghost sm" data-k="rm">Remove</button>' : ''}</div>${key === 'favicon' && !v ? '<small class="hint">Currently using a generated monogram in your colours.</small>' : ''}`;
     $(`#${id} [data-k="pick"]`).addEventListener('click', () => pickMedia((k) => { s[key] = k; slot(id, key); refresh(); }));
+    $(`#${id} [data-k="ai"]`).addEventListener('click', () => aiLogo(key, (k) => { s[key] = k; slot(id, key); refresh(); }));
     $(`#${id} [data-k="rm"]`)?.addEventListener('click', () => { s[key] = null; slot(id, key); refresh(); });
   };
   slot('logo', 'logo'); slot('fav', 'favicon');
@@ -661,9 +710,105 @@ async function viewMessages(main: HTMLElement) {
   main.querySelectorAll<HTMLElement>('[data-del]').forEach((b) => b.addEventListener('click', async () => { if (await confirmBox('Delete this message?', 'Delete')) { await api('DELETE', `/messages/${b.dataset.del}`); viewMessages(main); } }));
 }
 
+
+// ---------- AI ----------
+let aiCache: Any | null = null;
+async function aiInfo(fresh = false) {
+  if (!aiCache || fresh) aiCache = await api('GET', '/ai/providers');
+  return aiCache!;
+}
+const providerLabel = (id: string) => aiCache?.providers.find((p: Any) => p.id === id)?.label?.replace(/ \(.*\)$/, '') || id;
+
+/** A dropdown for picking Auto or one specific service, used next to every AI button. */
+async function aiPicker(id: string) {
+  const info = await aiInfo();
+  const ready = info.providers.filter((p: Any) => p.ready);
+  return `<select id="${id}" aria-label="AI service" style="width:auto;padding:6px 8px;font-size:13px">
+    <option value="default">${info.settings.mode === 'auto' ? 'Auto' : `Default (${esc(providerLabel(info.settings.mode))})`}</option>
+    ${info.settings.mode !== 'auto' ? '<option value="auto">Auto</option>' : ''}
+    ${ready.map((p: Any) => `<option value="${p.id}">${esc(p.label.replace(/ \(.*\)$/, ''))}</option>`).join('')}</select>`;
+}
+const madeBy = (r: Any) => `<p class="mono hint" style="margin:10px 0 0">Written by ${esc(providerLabel(r.provider))} (${esc(r.model)})${r.tried?.length ? `, after ${r.tried.map((t: Any) => esc(providerLabel(t.provider))).join(' and ')} didn't answer` : ''}</p>${r.flags?.length ? `<p class="hint" style="margin:6px 0 0">Stock phrases to look at: <b>${r.flags.map(esc).join(', ')}</b></p>` : ''}`;
+
+async function viewAi(main: HTMLElement) {
+  const info = await aiInfo(true);
+  const s = info.settings;
+  main.innerHTML = `<div class="head"><div><h1>AI providers</h1><div class="sub">Connect the services you use. Auto picks the best one for each job and moves on if one is down.</div></div></div>
+    ${info.canStoreKeys ? '' : '<div class="warn">Keys can\'t be saved until the site\'s APP_KEY secret is set. This happens during the Cloudflare setup.</div>'}
+    <div class="grid" style="max-width:860px">
+      <div class="card"><label class="f"><span>Which service to use</span><select id="ai-mode">
+        <option value="auto" ${s.mode === 'auto' ? 'selected' : ''}>Auto: best service for each job, with fallback</option>
+        ${info.providers.map((p: Any) => `<option value="${p.id}" ${s.mode === p.id ? 'selected' : ''}>Always ${esc(p.label)}</option>`).join('')}</select>
+        <small class="hint">You can still pick a different service on any AI button.</small></label>
+        <label class="f"><span>How you write</span><textarea id="ai-voice" rows="4">${esc(s.voice)}</textarea>
+        <small class="hint">Added to every request. Em dashes and stock phrases are always blocked, whatever this says.</small></label>
+        <button class="btn" id="ai-save">Save</button></div>
+      ${info.providers.map((p: Any) => `<div class="card" data-prov="${p.id}">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px"><b style="font-size:17px">${esc(p.label)}</b>
+          <span class="pill ${p.ready ? 'published' : p.needsKey && !p.hasKey ? '' : 'review'}">${p.ready ? 'Ready' : !p.enabled ? 'Off' : p.needsKey ? 'Needs a key' : 'Available once live'}</span></div>
+        ${p.needsKey ? `<label class="f"><span>API key</span><input type="password" data-k autocomplete="off" placeholder="${p.hasKey ? 'Saved. Paste a new key to replace it.' : 'Paste your key'}"><small class="hint">${esc(p.keyHint)}. Stored encrypted, never shown again.</small></label>` : `<p class="hint">${esc(p.keyHint)}</p>`}
+        <label class="f"><span>Model</span><input type="text" data-m value="${esc(p.model)}" list="ml-${p.id}"><datalist id="ml-${p.id}">${p.models.map((m: string) => `<option value="${esc(m)}">`).join('')}</datalist></label>
+        <label class="row" style="margin-bottom:14px"><input type="checkbox" data-e ${p.enabled ? 'checked' : ''}> Use this service</label>
+        <div class="row"><button class="btn sm" data-save>Save</button><button class="btn ghost sm" data-test ${p.ready ? '' : 'disabled'}>Test</button>${p.hasKey ? '<button class="btn danger sm" data-rm>Remove key</button>' : ''}<span class="hint" data-out></span></div>
+      </div>`).join('')}
+      <div class="card"><div class="mono hint" style="margin-bottom:8px">Recent AI activity</div>${info.log.length ? `<div style="overflow-x:auto"><table><tbody>${info.log.map((l: Any) => `<tr><td class="hint">${ago(l.created_at)}</td><td>${esc(l.task)}</td><td>${esc(providerLabel(l.provider))}</td><td><span class="pill ${l.ok ? 'published' : ''}">${l.ok ? `${(l.ms / 1000).toFixed(1)}s` : 'failed'}</span></td><td class="hint">${esc(l.error || '')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="hint" style="margin:0">Nothing yet.</p>'}</div>
+    </div>`;
+  $('#ai-save').addEventListener('click', async () => {
+    try { await api('PUT', '/ai/settings', { mode: ($('#ai-mode') as HTMLSelectElement).value, voice: ($('#ai-voice') as HTMLTextAreaElement).value }); aiCache = null; toast('Saved.'); } catch (e) { fail(e); }
+  });
+  main.querySelectorAll<HTMLElement>('[data-prov]').forEach((card) => {
+    const id = card.dataset.prov!;
+    const out = card.querySelector('[data-out]') as HTMLElement;
+    card.querySelector('[data-save]')!.addEventListener('click', async () => {
+      const k = (card.querySelector('[data-k]') as HTMLInputElement | null)?.value.trim();
+      try {
+        await api('PUT', `/ai/providers/${id}`, { ...(k ? { key: k } : {}), model: (card.querySelector('[data-m]') as HTMLInputElement).value, enabled: (card.querySelector('[data-e]') as HTMLInputElement).checked });
+        toast('Saved.'); viewAi(main);
+      } catch (e) { fail(e); }
+    });
+    card.querySelector('[data-test]')!.addEventListener('click', async () => {
+      out.textContent = 'Asking...';
+      try { const r = await api('POST', `/ai/test/${id}`); out.textContent = `Connected: "${r.text.slice(0, 80)}"`; } catch (e) { out.textContent = ''; fail(e); }
+    });
+    card.querySelector('[data-rm]')?.addEventListener('click', async () => {
+      if (!(await confirmBox('Remove the saved key for this service?', 'Remove key'))) return;
+      await api('PUT', `/ai/providers/${id}`, { key: null }); viewAi(main);
+    });
+  });
+}
+
+/** Shows an AI result for review. Nothing changes until "Use this" is pressed. */
+function reviewResult(title: string, r: Any, html: boolean, actions: { label: string; run: () => void }[]) {
+  const m = modal(title, `<div class="paper" style="padding:20px;max-height:52vh;overflow:auto"><div class="ProseMirror" style="min-height:0">${html ? r.text : `<p>${esc(r.text)}</p>`}</div></div>${madeBy(r)}
+    <div class="row" style="margin-top:16px">${actions.map((a, i) => `<button class="btn${i ? ' ghost' : ''}" data-a="${i}">${esc(a.label)}</button>`).join('')}<button class="btn ghost" data-close>Discard</button></div>`);
+  m.el.querySelectorAll<HTMLElement>('[data-a]').forEach((b) => b.addEventListener('click', () => { actions[Number(b.dataset.a)].run(); m.close(); }));
+}
+
+async function busy<T>(btn: HTMLButtonElement, label: string, fn: () => Promise<T>) {
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = label;
+  try { return await fn(); } finally { btn.disabled = false; btn.textContent = was; }
+}
+
+/** Generate a logo or browser icon with AI and pick one of three options. */
+async function aiLogo(kind: 'logo' | 'favicon', onUse: (key: string) => void) {
+  const m = modal(kind === 'logo' ? 'Make a logo with AI' : 'Make a browser icon with AI', `<label class="f"><span>What should it feel like?</span><textarea id="lg-brief" rows="3" placeholder="e.g. a simple MG monogram, calm and confident, a nod to the Wellington harbour"></textarea></label>
+    <div class="row" style="margin-bottom:16px">${await aiPicker('lg-pick')}<button class="btn" id="lg-go">Make 3 options</button></div><div id="lg-out" class="media-grid"></div>`);
+  const go = m.el.querySelector('#lg-go') as HTMLButtonElement;
+  go.addEventListener('click', () => busy(go, 'Designing...', async () => {
+    try {
+      const r = await api('POST', '/ai/logo', { kind, brief: ($('#lg-brief') as HTMLTextAreaElement).value, choice: ($('#lg-pick') as HTMLSelectElement).value });
+      const out = m.el.querySelector('#lg-out') as HTMLElement;
+      out.innerHTML = r.options.map((o: Any, i: number) => `<div class="m" data-i="${i}" title="Use this one"><img src="data:image/svg+xml;charset=utf-8,${encodeURIComponent(o.svg)}" alt="Option ${i + 1}" style="object-fit:contain;padding:12px;background:#fff"><span>${esc(providerLabel(o.provider))}, use this</span></div>`).join('');
+      out.querySelectorAll<HTMLElement>('.m').forEach((el) => el.addEventListener('click', async () => {
+        try { const u = await api('POST', '/ai/logo/use', { kind, svg: r.options[Number(el.dataset.i)].svg }); onUse(u.key); m.close(); toast(kind === 'logo' ? 'Logo saved. It is live.' : 'Icon saved. It is live.'); } catch (e) { fail(e); }
+      }));
+    } catch (e) { fail(e); }
+  }));
+}
+
 // ---------- Coming next ----------
 const SOON: Record<string, { title: string; body: string; items: string[] }> = {
-  ai: { title: 'AI providers', body: 'Connect the AI services you use. Auto mode picks the best one for each job, or you can choose.', items: ['Claude, ChatGPT, Grok and Gemini, with Cloudflare AI as a free backup', 'Auto mode that routes by task and falls back if a service is down', 'A model picker on every AI button', 'Every result passes the style check: no em dashes, no stock phrasing', 'AI logo and browser icon'] },
   ideas: { title: 'Create Ideas', body: 'Your own knowledge base turns into post ideas you can review, edit and publish.', items: ['Add notes, documents, links and past posts', 'One click for fresh post ideas grounded in what you know', 'Turn any idea into a full draft and social versions', 'Everything waits in "To review" until you approve it'] },
   social: { title: 'Social', body: 'Publish once, share everywhere, in a voice that suits each place.', items: ['Facebook Page and Instagram first', 'Then LinkedIn, X, Threads and Bluesky', 'Post now or schedule', 'Per-channel wording and image crops'] },
   integrations: { title: 'Integrations', body: 'Connect outside systems through their APIs.', items: ['Any REST API with an API key, token or OAuth', 'Incoming and outgoing webhooks', 'Use connected data in page blocks', 'Keys stored encrypted, never in code'] },
