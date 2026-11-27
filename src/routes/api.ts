@@ -14,6 +14,11 @@ import { BLOCK_TYPES, newBlock } from '../lib/defaults';
 import { normalizeTheme, PRESETS } from '../lib/themes';
 import { autoFocus } from '../lib/focus';
 import { loadFocus } from '../render/focus';
+import { loadModules, rowToModule, defaults as modDefaults } from '../lib/modules';
+import { fireEvent } from '../lib/integrations';
+import integrationRoutes from './integrations';
+import socialRoutes from './social';
+import moduleRoutes from './modules';
 import { sendMail, mailReady, ownerAddress, fromAddress, wrapHtml, textToHtml } from '../lib/mail';
 
 type Vars = { Bindings: Env; Variables: { uid: number; user: any } };
@@ -80,6 +85,9 @@ api.route('/people', peopleRoutes);
 api.route('/inspiration', inspireRoutes);
 api.route('/knowledge', knowledgeRoutes);
 api.route('/ideas', ideasRoutes);
+api.route('/integrations', integrationRoutes);
+api.route('/social', socialRoutes);
+api.route('/modules', moduleRoutes);
 
 // ---------- Settings ----------
 api.get('/settings', async (c) => c.json(await getSettings(c.env)));
@@ -96,10 +104,20 @@ api.put('/settings', async (c) => {
 api.get('/themes', (c) => c.json(PRESETS));
 
 // ---------- Blocks ----------
-api.get('/blocks', (c) => c.json(Object.entries(BLOCK_TYPES).map(([type, v]) => ({ type, label: v.label }))));
-api.get('/blocks/new/:type', (c) => {
-  if (!BLOCK_TYPES[c.req.param('type')]) return c.json({ error: 'Unknown block' }, 404);
-  return c.json(newBlock(c.req.param('type')));
+api.get('/blocks', async (c) => {
+  const { results } = await c.env.DB.prepare('SELECT slug, name FROM modules WHERE active = 1 ORDER BY name').all<{ slug: string; name: string }>();
+  return c.json([...Object.entries(BLOCK_TYPES).map(([type, v]) => ({ type, label: v.label })), ...results.map((m) => ({ type: `module:${m.slug}`, label: `${m.name} (module)` }))]);
+});
+api.get('/blocks/new/:type', async (c) => {
+  const t = c.req.param('type');
+  if (t.startsWith('module:')) {
+    const row = await c.env.DB.prepare('SELECT * FROM modules WHERE slug = ? AND active = 1').bind(t.slice(7)).first();
+    if (!row) return c.json({ error: 'Unknown module' }, 404);
+    const m = rowToModule(row);
+    return c.json({ ...newBlock('module'), data: { module: m.slug, ...modDefaults(m.fields), ...m.sample } });
+  }
+  if (!BLOCK_TYPES[t]) return c.json({ error: 'Unknown block' }, 404);
+  return c.json(newBlock(t));
 });
 
 // ---------- Pages ----------
@@ -132,6 +150,7 @@ api.put('/pages/:id{[0-9]+}', need('pages.edit'), async (c) => {
   await snapshot(c.env, 'page', id, cur);
   await c.env.DB.prepare("UPDATE pages SET slug=?, title=?, status=?, in_menu=?, menu_order=?, blocks=?, seo=?, updated_at=datetime('now') WHERE id=?")
     .bind(next.slug, next.title, next.status, next.in_menu ? 1 : 0, next.menu_order ?? 0, JSON.stringify(next.blocks), JSON.stringify(next.seo || {}), id).run();
+  if (cur.status !== 'published' && next.status === 'published') c.executionCtx.waitUntil(fireEvent(c.env, 'page.published', { id, title: next.title, url: `${new URL(c.req.url).origin}/${next.slug === 'home' ? '' : next.slug}` }));
   return c.json(await getPageById(c.env, id));
 });
 api.delete('/pages/:id{[0-9]+}', need('pages.delete'), async (c) => {
@@ -175,6 +194,7 @@ api.put('/posts/:id{[0-9]+}', need('posts.edit'), async (c) => {
   await snapshot(c.env, 'post', id, cur);
   await c.env.DB.prepare("UPDATE posts SET slug=?, title=?, excerpt=?, body=?, cover=?, tags=?, status=?, publish_at=?, published_at=?, updated_at=datetime('now') WHERE id=?")
     .bind(next.slug, next.title, next.excerpt, next.body, next.cover ?? null, JSON.stringify(next.tags || []), next.status, next.publish_at ?? null, next.published_at ?? null, id).run();
+  if (cur.status !== 'published' && next.status === 'published') c.executionCtx.waitUntil(fireEvent(c.env, 'post.published', { id, title: next.title, excerpt: next.excerpt, url: `${new URL(c.req.url).origin}/writing/${next.slug}` }));
   return c.json(await getPostById(c.env, id));
 });
 api.delete('/posts/:id{[0-9]+}', need('posts.delete'), async (c) => {
@@ -344,9 +364,10 @@ api.post('/preview', async (c) => {
     const home = await c.env.DB.prepare("SELECT blocks FROM pages WHERE slug = ?").bind(b.slug || 'home').first<{ blocks: string }>();
     blocks = home ? JSON.parse(home.blocks) : [];
   }
-  const [menu, posts] = await Promise.all([menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 })]);
+  const clean = guardDeep(blocks!);
+  const [menu, posts, modules] = await Promise.all([menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 }), loadModules(c.env, clean)]);
   const edit = b.edit !== false;
-  const html = layout(settings, { title: b.title || '', path: '/' + (b.slug === 'home' ? '' : b.slug || ''), menu, body: renderBlocks(guardDeep(blocks!), { edit, posts }), edit, siteUrl: '' });
+  const html = layout(settings, { title: b.title || '', path: '/' + (b.slug === 'home' ? '' : b.slug || ''), menu, body: renderBlocks(clean, { edit, posts, modules }), edit, siteUrl: '' });
   return c.html(html);
 });
 

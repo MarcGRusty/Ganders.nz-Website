@@ -1,11 +1,14 @@
 import type { Block, Post } from '../types';
 import { esc, clean, mediaUrl, fmtDate } from './html';
 import { focusPos } from './focus';
+import { renderModule, type LoadedModule } from '../lib/modules';
 
 export interface RenderCtx {
   edit: boolean;
   posts: Post[];
   index: number; // section number, for the 01 / 02 markers
+  modules?: Map<string, LoadedModule>;
+  css?: Set<string>; // module styles already on the page
 }
 
 /** Attributes that make a field editable in place when the page is opened in the visual editor. */
@@ -93,6 +96,15 @@ const renderers: Record<string, R> = {
   embed: ({ data: d }, ctx) => `<section class="sec embed"><div class="wrap">
     ${d.html ? `<iframe sandbox="allow-scripts allow-popups allow-same-origin" srcdoc="${esc(d.html)}" loading="lazy"></iframe>` : ctx.edit ? '<p class="mono empty">Embed: paste HTML in the block settings.</p>' : ''}</div></section>`,
 
+  module: ({ data: d }, ctx) => {
+    const m = ctx.modules?.get(String(d.module));
+    if (!m) return ctx.edit ? `<section class="sec"><div class="wrap mono empty">This module is missing or switched off.</div></section>` : '';
+    const { module: _slug, ...values } = d;
+    const out = renderModule(m, values);
+    const style = ctx.css && !ctx.css.has(m.def.slug) ? (ctx.css.add(m.def.slug), `<style>${out.css.replace(/<\//g, '<\\/')}</style>`) : '';
+    return `${style}<section class="sec mod m-${esc(m.def.slug)}"><div class="wrap">${out.html}</div></section>`;
+  },
+
   spacer: ({ data: d }) => `<div style="height:${Number(d.size) || 64}px"></div>`,
 };
 
@@ -101,11 +113,12 @@ const NUMBERED = new Set(['text', 'cards', 'timeline', 'posts', 'contact']);
 
 export function renderBlocks(blocks: Block[], ctx: Omit<RenderCtx, 'index'>) {
   let i = 0;
+  const css = ctx.css ?? new Set<string>();
   return blocks.map((b) => {
     const r = renderers[b.type];
     if (!r) return ctx.edit ? `<section data-block="${esc(b.id)}" class="sec"><div class="wrap mono empty">Unknown block: ${esc(b.type)}</div></section>` : '';
     if (NUMBERED.has(b.type)) i++;
-    const html = r(b, { ...ctx, index: i });
+    const html = r(b, { ...ctx, css, index: i });
     return ctx.edit ? `<div data-block="${esc(b.id)}" data-type="${esc(b.type)}">${html}</div>` : html;
   }).join('\n');
 }

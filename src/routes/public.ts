@@ -7,6 +7,9 @@ import { esc, clean, mediaUrl, fmtDate } from '../render/html';
 import { currentUser } from '../lib/auth';
 import { loadFocus, focusPos } from '../render/focus';
 import { sendMail, mailReady, ownerAddress, wrapHtml, textToHtml } from '../lib/mail';
+import { fireEvent, hmac, sameText, logIntegration, type Integration } from '../lib/integrations';
+import { open } from '../lib/crypto';
+import { loadModules } from '../lib/modules';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -17,8 +20,8 @@ async function renderPage(c: any, slug: string) {
   await ensureSeed(c.env);
   const page = await getPage(c.env, slug, edit);
   if (!page) return notFound(c);
-  const [s, menu, posts] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 }), loadFocus(c.env)]);
-  const body = renderBlocks(page.blocks, { edit, posts });
+  const [s, menu, posts, , modules] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 }), loadFocus(c.env), loadModules(c.env, page.blocks)]);
+  const body = renderBlocks(page.blocks, { edit, posts, modules });
   const html = layout(s, { title: slug === 'home' ? '' : page.title, description: page.seo.description, image: page.seo.image, path: slug === 'home' ? '/' : `/${slug}`, menu, body, edit, siteUrl: site(c) });
   return c.html(html, 200, edit ? { 'Cache-Control': 'no-store' } : { 'Cache-Control': 'public, max-age=0, s-maxage=30' });
 }
@@ -118,7 +121,54 @@ app.post('/contact', async (c) => {
   const row = await c.env.DB.prepare('INSERT INTO messages (name, email, body, form, page, data) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
     .bind(name, email, body, form, back, Object.keys(extra).length ? JSON.stringify(extra) : null).first<{ id: number }>();
   c.executionCtx.waitUntil(notifyOwner(c.env, new URL(c.req.url).origin, row!.id, { name, email, body, form, page: back, extra }));
+  c.executionCtx.waitUntil(fireEvent(c.env, 'message.received', { id: row!.id, form, name, email, body, page: back, fields: extra }));
   return c.redirect(`${back}?sent=1#contact`, 303);
+});
+
+// Incoming webhooks. Each one has its own secret address; if it has a signing secret, the
+// sender must sign the body (x-ganders-signature or x-hub-signature-256: sha256=<hex hmac>).
+app.post('/hook/:token{[A-Za-z0-9_-]{20,80}}', async (c) => {
+  const it = await c.env.DB.prepare("SELECT * FROM integrations WHERE kind = 'webhook_in' AND token = ?").bind(c.req.param('token')).first<Integration>();
+  if (!it || !it.active) return c.json({ error: 'Not found' }, 404);
+  const ip = c.req.header('cf-connecting-ip') || 'local';
+  const rk = `rl:hook:${it.id}:${ip}`;
+  const n = Number((await c.env.KV.get(rk)) || 0);
+  if (n >= 60) return c.json({ error: 'Too many requests. Try again later.' }, 429);
+  await c.env.KV.put(rk, String(n + 1), { expirationTtl: 3600 });
+  const raw = (await c.req.text()).slice(0, 200_000);
+  if (it.enc_secret) {
+    const given = (c.req.header('x-ganders-signature') || c.req.header('x-hub-signature-256') || '').replace(/^sha256=/, '');
+    const want = await hmac(await open(c.env.APP_KEY, it.enc_secret), raw);
+    if (!sameText(given.toLowerCase(), want)) { await logIntegration(c.env, it.id, 'in', false, 401, 'Signature did not match.'); return c.json({ error: 'Bad signature' }, 401); }
+  }
+  let data: Record<string, any> = {};
+  const type = c.req.header('content-type') || '';
+  try {
+    if (type.includes('json')) data = JSON.parse(raw || '{}');
+    else if (type.includes('form')) data = Object.fromEntries(new URLSearchParams(raw));
+    else data = { body: raw };
+  } catch { await logIntegration(c.env, it.id, 'in', false, 400, 'The body was not valid JSON.'); return c.json({ error: 'Send JSON or a form.' }, 400); }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) data = { items: data };
+  const str = (...keys: string[]) => { for (const k of keys) if (typeof data[k] === 'string' && data[k].trim()) return data[k].trim(); return ''; };
+  if (it.action === 'knowledge') {
+    const title = (str('title', 'subject', 'name') || `From ${it.name}`).slice(0, 200);
+    const body = (str('body', 'text', 'content', 'message') || JSON.stringify(data, null, 2)).slice(0, 100_000);
+    const r = await c.env.DB.prepare("INSERT INTO knowledge (kind, title, body) VALUES ('note', ?, ?) RETURNING id").bind(title, body).first<{ id: number }>();
+    await c.env.DB.prepare('INSERT INTO knowledge_fts (rowid, title, body) VALUES (?, ?, ?)').bind(r!.id, title, body).run();
+    await logIntegration(c.env, it.id, 'in', true, 200, `Added "${title.slice(0, 60)}" to the knowledge base.`);
+    return c.json({ ok: true, id: r!.id });
+  }
+  const name = (str('name', 'full_name', 'from_name', 'author') || it.name).slice(0, 120);
+  const email = (str('email', 'from', 'reply_to').match(/[^@\s<]+@[^@\s>]+\.[^@\s>]+/)?.[0] || '').slice(0, 200);
+  const body = (str('body', 'message', 'text', 'content', 'comment') || JSON.stringify(data, null, 2)).slice(0, 5000);
+  const form = 'webhook';
+  const extra: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data)) if (Object.keys(extra).length < 30 && !['name', 'email', 'body', 'message', 'text'].includes(k)) extra[k.slice(0, 60)] = (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 2000);
+  const row = await c.env.DB.prepare('INSERT INTO messages (name, email, body, form, page, data) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+    .bind(name, email, body, form, it.name.slice(0, 80), Object.keys(extra).length ? JSON.stringify(extra) : null).first<{ id: number }>();
+  await logIntegration(c.env, it.id, 'in', true, 200, `New Inbox message from ${name.slice(0, 60)}.`);
+  c.executionCtx.waitUntil(notifyOwner(c.env, new URL(c.req.url).origin, row!.id, { name, email: email || 'no email given', body, form: it.name, page: 'a webhook', extra }));
+  return c.json({ ok: true, id: row!.id });
 });
 
 async function notifyOwner(env: Env, origin: string, id: number, m: { name: string; email: string; body: string; form: string; page: string; extra: Record<string, string> }) {
@@ -133,7 +183,7 @@ async function notifyOwner(env: Env, origin: string, id: number, m: { name: stri
 ${textToHtml(m.body)}${extras ? `<p style="margin:0 0 14px;color:#55646B;white-space:pre-wrap">${esc(extras)}</p>` : ''}
 <p style="margin:22px 0 0"><a href="${esc(studio)}" style="display:inline-block;background:#0E1B22;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px">Open in Studio</a></p>`,
     'Reply to this email to answer them directly.');
-  const r = await sendMail(env, { to, subject: `New message from ${m.name}`, text, html, replyTo: m.email, kind: 'form' }, settings.name);
+  const r = await sendMail(env, { to, subject: `New message from ${m.name}`, text, html, replyTo: m.email.includes('@') ? m.email : undefined, kind: 'form' }, settings.name);
   if (r.ok) await env.DB.prepare('UPDATE messages SET emailed = 1 WHERE id = ?').bind(id).run();
 }
 

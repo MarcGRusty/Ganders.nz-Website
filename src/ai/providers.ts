@@ -3,7 +3,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Env } from '../types';
 
-export type Task = 'draft' | 'rewrite' | 'short' | 'ideas' | 'svg' | 'module' | 'design';
+export type Task = 'draft' | 'rewrite' | 'short' | 'ideas' | 'svg' | 'module' | 'design' | 'social';
 
 export interface GenRequest {
   system: string;
@@ -26,8 +26,8 @@ export interface ProviderDef {
 }
 
 /** Shorter tasks need less thinking; long-form writing gets more. */
-const EFFORT: Record<Task, 'low' | 'medium' | 'high'> = { short: 'low', ideas: 'medium', rewrite: 'medium', draft: 'high', svg: 'medium', module: 'high', design: 'medium' };
-const MAX: Record<Task, number> = { short: 2000, ideas: 6000, rewrite: 8000, draft: 16000, svg: 8000, module: 16000, design: 8000 };
+const EFFORT: Record<Task, 'low' | 'medium' | 'high'> = { short: 'low', ideas: 'medium', rewrite: 'medium', draft: 'high', svg: 'medium', module: 'high', design: 'medium', social: 'low' };
+const MAX: Record<Task, number> = { short: 2000, ideas: 6000, rewrite: 8000, draft: 16000, svg: 8000, module: 16000, design: 8000, social: 4000 };
 
 async function postJson(url: string, body: unknown, headers: Record<string, string>, signal: AbortSignal) {
   const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal });
@@ -150,4 +150,5 @@ export const AUTO_ORDER: Record<Task, string[]> = {
   svg: ['claude', 'openai', 'gemini', 'grok'],
   module: ['claude', 'openai', 'gemini', 'grok'],
   design: ['claude', 'gemini', 'openai', 'grok', 'workers'],
+  social: ['claude', 'openai', 'grok', 'gemini', 'workers'],
 };

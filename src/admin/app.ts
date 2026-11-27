@@ -106,9 +106,9 @@ const NAV: [string, string, string, string?][] = [
   ['/admin/messages', 'Inbox', 'messages.view'],
   ['/admin/ai', 'AI providers', 'ai.manage'],
   ['/admin/ideas', 'Create Ideas', 'ideas.use'],
-  ['/admin/social', 'Social', 'social.post', 'Soon'],
-  ['/admin/integrations', 'Integrations', 'integrations.manage', 'Soon'],
-  ['/admin/modules', 'Modules', 'modules.manage', 'Soon'],
+  ['/admin/social', 'Social', 'social.post'],
+  ['/admin/integrations', 'Integrations', 'integrations.manage'],
+  ['/admin/modules', 'Modules', 'modules.manage'],
   ['/admin/people', 'People', 'users.manage'],
 ];
 
@@ -154,8 +154,11 @@ async function route() {
     if (path === '/admin/ai') return await viewAi(main);
     if (path === '/admin/people') return await viewPeople(main);
     if (path === '/admin/account') return await viewAccount(main);
-    const soon = SOON[path.split('/')[2]];
-    if (soon) return viewSoon(main, soon);
+    if (path === '/admin/social') return await viewSocial(main);
+    if (path === '/admin/integrations') return await viewIntegrations(main);
+    if (path === '/admin/modules') return await viewModules(main);
+    if (path === '/admin/modules/new') return await viewModuleEditor(main, null);
+    r = m(/^\/admin\/modules\/(\d+)$/); if (r) return await viewModuleEditor(main, Number(r[1]));
     main.innerHTML = '<div class="head"><h1>Not found</h1></div>';
   } catch (e) { if ((e as Error).message !== 'Please sign in.') { main.innerHTML = `<div class="warn">${esc((e as Error).message)}</div>`; } }
 }
@@ -211,7 +214,7 @@ const blockSummary = (b: Any) => {
 
 async function viewPageEditor(main: HTMLElement, id: number) {
   const [page, types] = await Promise.all([api<Any>('GET', `/pages/${id}`), api<Any[]>('GET', '/blocks')]);
-  const label = (t: string) => types.find((x) => x.type === t)?.label || t;
+  const label = (t: string, b?: Any) => (t === 'module' && b ? types.find((x) => x.type === `module:${b.data.module}`)?.label || 'Module' : types.find((x) => x.type === t)?.label || t);
   let dirty = false;
   let selected: string | null = null;
   let device: 'desktop' | 'mobile' = 'desktop';
@@ -243,7 +246,7 @@ async function viewPageEditor(main: HTMLElement, id: number) {
   function renderList() {
     const el = $('#blocks');
     el.innerHTML = page.blocks.map((b: Any, i: number) => `<div class="blk${b.id === selected ? ' sel' : ''}" draggable="true" data-i="${i}" data-id="${esc(b.id)}">
-        <div class="t"><b>${esc(label(b.type))}</b><small>${esc(blockSummary(b)) || '&nbsp;'}</small></div>
+        <div class="t"><b>${esc(label(b.type, b))}</b><small>${esc(blockSummary(b)) || '&nbsp;'}</small></div>
         <button data-act="up" title="Move up" aria-label="Move up">&uarr;</button><button data-act="down" title="Move down" aria-label="Move down">&darr;</button>
         <button data-act="edit" title="Settings">Edit</button><button data-act="del" title="Remove" aria-label="Remove">&times;</button></div>
         ${b.id === selected ? `<div class="panel" id="blk-panel"></div>` : ''}`).join('') +
@@ -289,6 +292,7 @@ async function viewPageEditor(main: HTMLElement, id: number) {
     const b = page.blocks.find((x: Any) => x.id === selected);
     const el = $('#blk-panel');
     if (!b || !el) return;
+    if (b.type === 'module') { el.innerHTML = '<p class="hint" style="margin:0">Loading...</p>'; modulePanel(el, b, (full) => { markDirty(); if (full) { renderList(); refresh(); } }); return; }
     const field = (path: string, key: string, v: any) => {
       if (Array.isArray(v)) return '';
       if (/^(image|src|cover)$/.test(key)) return `<label class="f"><span>${key === 'src' ? 'Image' : 'Photo'}</span><div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:3px">` : ''}<button type="button" class="btn ghost sm" data-pick="${esc(path)}">${v ? 'Change' : 'Choose'}</button>${v ? `<button type="button" class="btn ghost sm" data-clear="${esc(path)}">Remove</button>` : ''}</div></label>`;
@@ -534,6 +538,7 @@ async function viewPostEditor(main: HTMLElement, id: number) {
         <label class="f" id="when" ${post.status === 'scheduled' ? '' : 'hidden'}><span>Publish at (NZ time)</span><input type="datetime-local" id="publish_at"></label>
         ${can('posts.publish') ? `<button class="btn" id="publish" style="width:100%;justify-content:center">${post.status === 'published' ? 'Update live post' : 'Publish now'}</button>` : '<p class="hint" style="margin:0">When it\'s ready, set it to "Ready for review" and save.</p>'}</div>
       <div class="card"><label class="f"><span>Cover image</span><div id="cover"></div></label></div>
+      ${can('social.post') ? `<div class="card"><span class="mono hint">Share</span><p class="hint" style="margin:6px 0 10px">${post.status === 'published' ? 'Send it to Facebook, Instagram, Bluesky or Mastodon.' : 'Once it is published you can share it from here.'}</p><a class="btn ghost sm" href="/admin/social?post=${post.id}" data-link ${post.status === 'published' ? '' : 'hidden'} id="share-btn">Share this post</a></div>` : ''}
       <div class="card"><label class="f"><span>Tags</span><input type="text" id="tags" value="${esc(post.tags.join(', '))}" placeholder="security, travel"></label>
         <label class="f" style="margin:0"><span>Address</span><input type="text" id="slug" value="${esc(post.slug)}"></label></div>
       <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:10px"><span class="mono hint">Write with AI</span><span id="ai-pick-wrap"></span></div>
@@ -630,6 +635,7 @@ async function viewPostEditor(main: HTMLElement, id: number) {
       ($('#slug') as HTMLInputElement).value = post.slug;
       ($('#pv') as HTMLAnchorElement).href = `/writing/${post.slug}?preview=1`;
       if ($('#publish')) $('#publish').textContent = post.status === 'published' ? 'Update live post' : 'Publish now';
+      $('#share-btn')?.toggleAttribute('hidden', post.status !== 'published');
       toast(post.status === 'published' ? 'Published.' : post.status === 'scheduled' ? 'Scheduled.' : 'Saved.');
     } catch (e) { fail(e); }
   }
@@ -1286,16 +1292,382 @@ async function viewAccount(main: HTMLElement, forced = false) {
   });
 }
 
-// ---------- Coming next ----------
-const SOON: Record<string, { title: string; body: string; items: string[] }> = {
-  ideas: { title: 'Create Ideas', body: 'Your own knowledge base turns into post ideas you can review, edit and publish.', items: ['Add notes, documents, links and past posts', 'One click for fresh post ideas grounded in what you know', 'Turn any idea into a full draft and social versions', 'Everything waits in "To review" until you approve it'] },
-  social: { title: 'Social', body: 'Publish once, share everywhere, in a voice that suits each place.', items: ['Facebook Page and Instagram first', 'Then LinkedIn, X, Threads and Bluesky', 'Post now or schedule', 'Per-channel wording and image crops'] },
-  integrations: { title: 'Integrations', body: 'Connect outside systems through their APIs.', items: ['Any REST API with an API key, token or OAuth', 'Incoming and outgoing webhooks', 'Use connected data in page blocks', 'Keys stored encrypted, never in code'] },
-  modules: { title: 'Modules', body: 'Describe what you want and AI builds it as a block you can drop on any page.', items: ['Plain-English description in, working block out', 'Preview before it goes live', 'Runs in a sandbox so it cannot break the site', 'Versioned, so you can roll back'] },
+// ---------- Integrations ----------
+const KIND_INFO: Record<string, { title: string; sub: string; add: string }> = {
+  api: { title: 'APIs you can use', sub: 'Outside services Studio can read from, for example to show live data in a module.', add: 'Add an API' },
+  webhook_out: { title: 'Tell other systems', sub: 'Studio sends a signed message to another system whenever something happens here.', add: 'Add an outgoing webhook' },
+  webhook_in: { title: 'Let other systems send to you', sub: 'A private address other systems can post to. What arrives lands in your Inbox or knowledge base.', add: 'Add an incoming webhook' },
 };
-function viewSoon(main: HTMLElement, s: { title: string; body: string; items: string[] }) {
-  main.innerHTML = `<div class="head"><div><h1>${esc(s.title)}</h1><div class="sub">${esc(s.body)}</div></div></div>
-    <div class="soon"><span class="pill scheduled">Being built</span><ul>${s.items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></div>`;
+const AUTH_LABEL: Record<string, string> = { none: 'No key', bearer: 'Bearer token', header: 'Key in a header', query: 'Key in the address', basic: 'Username and password' };
+const headerText = (h: Any) => Object.entries(h || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+const parseHeaders = (t: string) => Object.fromEntries(t.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const i = l.indexOf(':'); return i > 0 ? [l.slice(0, i).trim(), l.slice(i + 1).trim()] : [l, '']; }));
+const randomSecret = () => [...crypto.getRandomValues(new Uint8Array(24))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+async function viewIntegrations(main: HTMLElement) {
+  const r = await api<Any>('GET', '/integrations');
+  const card = (it: Any) => `<div class="card intg" data-id="${it.id}">
+    <div class="row" style="justify-content:space-between;gap:10px"><b style="font-size:16px">${esc(it.name)}</b>
+      <span class="pill ${!it.active ? '' : it.last_ok === 1 ? 'published' : it.last_ok === 0 ? 'failed' : 'review'}">${!it.active ? 'Off' : it.last_ok === 1 ? 'Working' : it.last_ok === 0 ? 'Problem' : 'Not used yet'}</span></div>
+    <div class="hint mono intg-url">${esc(it.kind === 'webhook_in' ? it.address : it.url)}</div>
+    ${it.kind === 'webhook_out' ? `<div class="hint">${it.events.length ? it.events.map((e: string) => esc(r.events.find((x: Any) => x.id === e)?.label || e)).join(', ') : 'No events picked yet'}</div>` : ''}
+    ${it.kind === 'webhook_in' ? `<div class="hint">Goes to your ${it.action === 'knowledge' ? 'knowledge base' : 'Inbox'}${it.hasSecret ? ', signed' : ''}</div>` : ''}
+    ${it.kind === 'api' ? `<div class="hint">${esc(AUTH_LABEL[it.auth])}${it.hasSecret ? ', saved' : ''}</div>` : ''}
+    ${it.last_at ? `<div class="hint">${esc(it.last_note || '')} ${ago(it.last_at)}</div>` : ''}
+    <div class="row" style="margin-top:12px"><button class="btn ghost sm" data-edit>Edit</button>${it.kind === 'webhook_in' ? '<button class="btn ghost sm" data-copy>Copy address</button>' : '<button class="btn ghost sm" data-test>Test</button>'}<button class="btn ghost sm" data-log>Log</button><button class="btn danger sm" data-del>Delete</button></div></div>`;
+  main.innerHTML = `<div class="head"><div><h1>Integrations</h1><div class="sub">Connect outside systems. Keys and secrets are stored encrypted and never shown again.</div></div></div>
+    ${r.canStoreKeys ? '' : '<div class="warn">Keys can\'t be saved until the site\'s APP_KEY secret is set.</div>'}
+    ${Object.entries(KIND_INFO).map(([k, info]) => `<section class="intg-sec"><div class="row" style="justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:12px"><div><h2>${esc(info.title)}</h2><p class="hint" style="margin:4px 0 0">${esc(info.sub)}</p></div><button class="btn sm" data-add="${k}">${esc(info.add)}</button></div>
+      ${r.items.filter((i: Any) => i.kind === k).length ? `<div class="intg-grid">${r.items.filter((i: Any) => i.kind === k).map(card).join('')}</div>` : '<p class="hint">None yet.</p>'}</section>`).join('')}`;
+  main.querySelectorAll<HTMLElement>('[data-add]').forEach((b) => b.addEventListener('click', () => integrationForm(b.dataset.add!, null, r.events, () => viewIntegrations(main))));
+  main.querySelectorAll<HTMLElement>('.intg').forEach((el) => {
+    const it = r.items.find((i: Any) => i.id === Number(el.dataset.id));
+    el.querySelector('[data-edit]')!.addEventListener('click', () => integrationForm(it.kind, it, r.events, () => viewIntegrations(main)));
+    el.querySelector('[data-copy]')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(it.address); toast('Address copied.'); } catch { toast(it.address); } });
+    el.querySelector('[data-test]')?.addEventListener('click', () => integrationTest(it, () => viewIntegrations(main)));
+    el.querySelector('[data-log]')!.addEventListener('click', async () => {
+      const log = await api<Any[]>('GET', `/integrations/${it.id}/log`);
+      modal(`${it.name}: recent activity`, log.length ? `<div style="max-height:60vh;overflow:auto">${log.map((l) => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0;gap:10px"><span>${esc(l.note)}<div class="hint mono">${esc(l.direction)}${l.event ? ` &middot; ${esc(l.event)}` : ''}</div></span><span class="pill ${l.ok ? 'published' : 'failed'}">${ago(l.created_at)}</span></div>`).join('')}</div>` : '<p class="hint">Nothing yet.</p>');
+    });
+    el.querySelector('[data-del]')!.addEventListener('click', async () => {
+      if (!(await confirmBox(`Delete "${it.name}"? ${it.kind === 'webhook_in' ? 'Anything still sending to its address will be turned away.' : 'Modules that read from it will stop showing its data.'}`, 'Delete'))) return;
+      await api('DELETE', `/integrations/${it.id}`); toast('Deleted.'); viewIntegrations(main);
+    });
+  });
+}
+
+function integrationForm(kind: string, it: Any | null, events: Any[], done: () => void) {
+  const v = it || { name: '', url: '', auth: 'bearer', auth_name: '', headers: {}, events: [], action: 'inbox', active: 1, hasSecret: false };
+  const m = modal(it ? `Edit ${it.name}` : KIND_INFO[kind].add, `<form id="ig-form">
+    <label class="f"><span>Name</span><input type="text" id="ig-name" required maxlength="80" value="${esc(v.name)}" placeholder="${kind === 'api' ? 'e.g. Strava' : kind === 'webhook_out' ? 'e.g. Zapier, new posts' : 'e.g. Newsletter sign-ups'}"></label>
+    ${kind !== 'webhook_in' ? `<label class="f"><span>${kind === 'api' ? 'Base address' : 'Send to'}</span><input type="text" id="ig-url" inputmode="url" required value="${esc(v.url || '')}" placeholder="https://"></label>` : ''}
+    ${kind === 'api' ? `<label class="f"><span>How it checks who you are</span><select id="ig-auth">${Object.entries(AUTH_LABEL).map(([k, l]) => `<option value="${k}" ${v.auth === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f" id="ig-an-wrap"><span>Header or parameter name</span><input type="text" id="ig-an" value="${esc(v.auth_name || '')}" placeholder="x-api-key"></label>` : ''}
+    ${kind === 'webhook_out' ? `<div class="f"><span>Send when</span>${events.map((e) => `<label class="row"><input type="checkbox" value="${e.id}" data-ev ${v.events.includes(e.id) ? 'checked' : ''}> ${esc(e.label)}</label>`).join('')}</div>` : ''}
+    ${kind === 'webhook_in' ? `<label class="f"><span>What arrives goes to</span><select id="ig-act"><option value="inbox" ${v.action !== 'knowledge' ? 'selected' : ''}>My Inbox, and an email to me</option><option value="knowledge" ${v.action === 'knowledge' ? 'selected' : ''}>My knowledge base, for Create Ideas</option></select></label>` : ''}
+    <label class="f"><span>${kind === 'api' ? 'Key, token or password' : 'Signing secret (optional)'}</span><div class="row" style="flex-wrap:nowrap"><input type="password" id="ig-secret" autocomplete="off" placeholder="${v.hasSecret ? 'Saved. Type a new one to replace it.' : kind === 'api' ? (v.auth === 'basic' ? 'username:password' : 'Paste it here') : 'Leave empty for none'}" style="flex:1">${kind !== 'api' ? '<button type="button" class="btn ghost sm" id="ig-gen">Make one</button>' : ''}</div>
+      <small class="hint">${kind === 'webhook_out' ? 'If set, every message carries an x-ganders-signature header (sha256 HMAC of the body).' : kind === 'webhook_in' ? 'If set, senders must sign the body: x-ganders-signature or x-hub-signature-256 set to sha256=&lt;HMAC&gt;.' : 'Stored encrypted. For a username and password, write username:password.'}</small>${v.hasSecret ? '<label class="row"><input type="checkbox" id="ig-clear"> Remove the saved one</label>' : ''}</label>
+    ${kind !== 'webhook_in' ? `<details${Object.keys(v.headers || {}).length ? ' open' : ''}><summary class="hint">Extra headers</summary><label class="f"><textarea id="ig-headers" rows="3" spellcheck="false" placeholder="Accept-Language: en-NZ" style="font-family:var(--mono);font-size:12px">${esc(headerText(v.headers))}</textarea><small class="hint">One per line. Not for secrets: those go in the field above.</small></label></details>` : ''}
+    ${it?.kind === 'webhook_in' ? '<label class="row"><input type="checkbox" id="ig-new"> Give it a new address (the old one stops working)</label>' : ''}
+    <label class="row" style="margin:10px 0 16px"><input type="checkbox" id="ig-on" ${v.active ? 'checked' : ''}> Switched on</label>
+    <button class="btn">${it ? 'Save' : 'Add it'}</button></form>`);
+  const q = <T extends HTMLElement>(s: string) => m.el.querySelector(s) as T | null;
+  const syncAuth = () => { const a = q<HTMLSelectElement>('#ig-auth')?.value; const w = q('#ig-an-wrap'); if (w) w.hidden = !(a === 'header' || a === 'query'); };
+  q('#ig-auth')?.addEventListener('change', syncAuth); syncAuth();
+  q('#ig-gen')?.addEventListener('click', async () => { const s = randomSecret(); const i = q<HTMLInputElement>('#ig-secret')!; i.value = s; i.type = 'text'; try { await navigator.clipboard.writeText(s); toast('Made one and copied it. Give it to the other system too.'); } catch { toast('Made one. Copy it before saving.'); } });
+  q('#ig-form')!.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const secret = q<HTMLInputElement>('#ig-secret')!.value.trim();
+    const body: Any = {
+      kind, name: q<HTMLInputElement>('#ig-name')!.value, active: q<HTMLInputElement>('#ig-on')!.checked,
+      ...(q('#ig-url') ? { url: q<HTMLInputElement>('#ig-url')!.value } : {}),
+      ...(q('#ig-auth') ? { auth: q<HTMLSelectElement>('#ig-auth')!.value, auth_name: q<HTMLInputElement>('#ig-an')!.value } : {}),
+      ...(q('#ig-headers') ? { headers: parseHeaders(q<HTMLTextAreaElement>('#ig-headers')!.value) } : {}),
+      ...(kind === 'webhook_out' ? { events: [...m.el.querySelectorAll<HTMLInputElement>('[data-ev]:checked')].map((x) => x.value) } : {}),
+      ...(q('#ig-act') ? { action: q<HTMLSelectElement>('#ig-act')!.value } : {}),
+      ...(q<HTMLInputElement>('#ig-clear')?.checked ? { secret: null } : secret ? { secret } : {}),
+      ...(q<HTMLInputElement>('#ig-new')?.checked ? { newAddress: true } : {}),
+    };
+    try {
+      const saved = await api<Any>(it ? 'PUT' : 'POST', it ? `/integrations/${it.id}` : '/integrations', body);
+      m.close(); done();
+      if (!it && saved.kind === 'webhook_in') modal('Its private address', `<p>Give this address to the other system. Anyone with it can send to you, so keep it private.</p><input type="text" readonly value="${esc(saved.address)}" style="font-family:var(--mono);font-size:12px"><p class="hint">It accepts JSON or form posts. Fields called name, email and message (or body) are picked up; everything else is kept with it.</p>`);
+      else toast('Saved.');
+    } catch (err) { fail(err); }
+  });
+}
+
+function integrationTest(it: Any, done: () => void) {
+  const m = modal(`Test ${it.name}`, `${it.kind === 'api' ? `<label class="f"><span>Path to try (optional)</span><input type="text" id="it-path" placeholder="e.g. v1/me" spellcheck="false"></label>` : '<p>Sends a "test.ping" message. Nothing changes on the site.</p>'}
+    <button class="btn" id="it-go">${it.kind === 'api' ? 'Call it' : 'Send a test'}</button><div id="it-out" style="margin-top:14px"></div>`);
+  const btn = m.el.querySelector('#it-go') as HTMLButtonElement;
+  btn.addEventListener('click', () => busy(btn, 'Trying...', async () => {
+    try {
+      const r = await api<Any>('POST', `/integrations/${it.id}/test`, { path: (m.el.querySelector('#it-path') as HTMLInputElement | null)?.value || '' });
+      (m.el.querySelector('#it-out') as HTMLElement).innerHTML = `<p><span class="pill ${r.ok ? 'published' : 'failed'}">${r.ok ? 'Worked' : 'Did not work'}</span> ${esc(r.note || (r.status ? `It answered ${r.status}.` : ''))}</p>${r.preview ? `<pre class="intg-pre">${esc(r.preview)}</pre>` : ''}`;
+      done();
+    } catch (e) { fail(e); }
+  }));
+}
+
+// ---------- Social ----------
+const NET_HELP: Record<string, string> = {
+  bluesky: 'Use an app password, not your main password: Bluesky, Settings, Privacy and security, App passwords.',
+  mastodon: 'On your server: Preferences, Development, New application. Tick write:statuses and write:media, save, then copy "Your access token".',
+};
+
+async function viewSocial(main: HTMLElement) {
+  const qs = new URLSearchParams(location.search);
+  const r = await api<Any>('GET', '/social');
+  const acct = (n: string) => r.accounts.find((a: Any) => a.network === n);
+  const posts = can('posts.view') ? await api<Any[]>('GET', '/posts?status=published').catch(() => []) : [];
+  const msg = qs.get('connected') ? `<div class="ok-note">Connected ${esc(qs.get('connected'))}.${qs.get('noig') ? ' No Instagram came through: check Instagram is a professional account linked to this Page, and tick it when Facebook asks which accounts to share.' : ''}</div>` : qs.get('error') ? `<div class="warn">${esc(qs.get('error'))}</div>` : '';
+  if (qs.get('connected') || qs.get('error')) history.replaceState({}, '', `/admin/social${qs.get('post') ? `?post=${qs.get('post')}` : ''}`);
+  const meta = r.apps.meta;
+  const netCard = (id: string) => {
+    const a = acct(id); const n = r.networks.find((x: Any) => x.id === id);
+    let body = '';
+    if (a) body = `<p style="margin:0"><b>${esc(a.name)}</b></p><p class="hint" style="margin:4px 0 12px">Connected ${ago(a.connected_at)}</p>${r.canManage ? '<button class="btn ghost sm" data-off>Disconnect</button>' : ''}`;
+    else if (!r.canManage) body = '<p class="hint" style="margin:0">Not connected. Ask the site owner to connect it.</p>';
+    else if (id === 'facebook' || id === 'instagram') body = meta ? `<p class="hint" style="margin:0 0 12px">${id === 'instagram' ? 'Comes with your Facebook Page, if Instagram is a professional account linked to it.' : 'Signs in with Facebook and picks your Page.'}</p><a class="btn sm" href="/api/social/meta/start">Connect with Facebook</a>` : '<p class="hint" style="margin:0">Add your Meta app first, below.</p>';
+    else if (id === 'bluesky') body = `<form data-connect="bluesky"><label class="f"><span>Handle</span><input type="text" name="handle" placeholder="you.bsky.social" autocomplete="off" required></label><label class="f"><span>App password</span><input name="password" type="password" autocomplete="off" required></label><details><summary class="hint">Own server</summary><label class="f"><input type="text" name="service" placeholder="https://bsky.social"></label></details><small class="hint">${esc(NET_HELP.bluesky)}</small><div style="margin-top:10px"><button class="btn sm">Connect</button></div></form>`;
+    else body = `<form data-connect="mastodon"><label class="f"><span>Your server</span><input type="text" name="instance" placeholder="mastodon.nz" required></label><label class="f"><span>Access token</span><input name="token" type="password" autocomplete="off" required></label><small class="hint">${esc(NET_HELP.mastodon)}</small><div style="margin-top:10px"><button class="btn sm">Connect</button></div></form>`;
+    return `<div class="card" data-net="${id}"><div class="row" style="justify-content:space-between;margin-bottom:10px"><b style="font-size:16px">${esc(n.label)}</b><span class="pill ${a ? 'published' : ''}">${a ? 'Connected' : 'Not connected'}</span></div>${body}</div>`;
+  };
+  main.innerHTML = `<div class="head"><div><h1>Social</h1><div class="sub">Share your posts, or anything else, to each network in words that suit it. Send now or pick a time.</div></div></div>
+    ${msg}${r.canStoreKeys ? '' : '<div class="warn">Accounts can\'t be connected until the site\'s APP_KEY secret is set.</div>'}
+    <div class="tabs"><button data-t="share" class="on">Share</button><button data-t="queue">Sent and waiting (${r.queue.length})</button><button data-t="accounts">Accounts</button></div>
+    <div id="so-share"></div>
+    <div id="so-queue" hidden></div>
+    <div id="so-accounts" hidden><div class="intg-grid">${['facebook', 'instagram', 'bluesky', 'mastodon'].map(netCard).join('')}</div>
+      ${r.canManage ? `<div class="card" style="margin-top:16px;max-width:720px"><h2 style="margin:0 0 6px;font-size:18px">Meta app (Facebook and Instagram)</h2>
+        <p class="hint" style="margin:0 0 14px">Facebook and Instagram only let websites post through an app you own. You can reuse the one from your old site, or make a new one at developers.facebook.com.</p>
+        <label class="f"><span>App ID</span><input type="text" id="meta-id" inputmode="numeric" value="${esc(meta?.appId || '')}"></label>
+        <label class="f"><span>App secret</span><input id="meta-secret" type="password" autocomplete="off" placeholder="${meta?.hasSecret ? 'Saved. Paste a new one to replace it.' : 'From App settings, Basic'}"></label>
+        <details><summary class="hint">Graph API version</summary><label class="f"><input type="text" id="meta-v" value="${esc(meta?.graphVersion || '')}" placeholder="v24.0"></label></details>
+        <label class="f"><span>Add this to "Valid OAuth Redirect URIs" in the app's Facebook Login settings</span><input type="text" readonly value="${esc(r.callback)}" style="font-family:var(--mono);font-size:12px" id="meta-cb"></label>
+        <div class="row"><button class="btn sm" id="meta-save">Save</button>${meta ? '<button class="btn danger sm" id="meta-rm">Remove app</button>' : ''}</div></div>` : ''}</div>`;
+  const tabs = main.querySelectorAll<HTMLElement>('.tabs button');
+  const show = (t: string) => { tabs.forEach((b) => b.classList.toggle('on', b.dataset.t === t)); (['share', 'queue', 'accounts'] as const).forEach((k) => { ($(`#so-${k}`) as HTMLElement).hidden = k !== t; }); };
+  tabs.forEach((b) => b.addEventListener('click', () => show(b.dataset.t!)));
+  if (!r.accounts.length && r.canManage) show('accounts');
+  if (qs.get('connected') || qs.get('error')) show('accounts');
+
+  // Accounts
+  main.querySelectorAll<HTMLElement>('[data-net]').forEach((card) => {
+    card.querySelector('[data-off]')?.addEventListener('click', async () => {
+      if (!(await confirmBox('Disconnect this account? Anything waiting to go to it will fail until you connect again.', 'Disconnect'))) return;
+      await api('DELETE', `/social/accounts/${card.dataset.net}`); viewSocial(main);
+    });
+    const f = card.querySelector<HTMLFormElement>('[data-connect]');
+    f?.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = f.querySelector('button') as HTMLButtonElement;
+      await busy(btn, 'Checking...', async () => {
+        try { const x = await api<Any>('POST', `/social/${f.dataset.connect}`, Object.fromEntries(new FormData(f) as any)); toast(`Connected ${x.name}.`); viewSocial(main); } catch (err) { fail(err); }
+      });
+    });
+  });
+  $('#meta-cb')?.addEventListener('focus', (e) => (e.target as HTMLInputElement).select());
+  $('#meta-save')?.addEventListener('click', async () => {
+    try { await api('PUT', '/social/apps/meta', { appId: ($('#meta-id') as HTMLInputElement).value, appSecret: ($('#meta-secret') as HTMLInputElement).value, graphVersion: ($('#meta-v') as HTMLInputElement).value }); toast('Meta app saved. Now press Connect with Facebook.'); viewSocial(main); } catch (e) { fail(e); }
+  });
+  $('#meta-rm')?.addEventListener('click', async () => { if (await confirmBox('Remove the Meta app details? Facebook and Instagram stop working until you add them again.', 'Remove')) { await api('PUT', '/social/apps/meta', { remove: true }); viewSocial(main); } });
+
+  // Queue
+  const STATUS: Record<string, string> = { queued: 'Waiting', sending: 'Sending', sent: 'Sent', failed: 'Failed' };
+  $('#so-queue').innerHTML = r.queue.length ? `<div class="card" style="padding:0;overflow-x:auto"><table><thead><tr><th>Where</th><th>What</th><th>Status</th><th>When</th><th></th></tr></thead><tbody>
+    ${r.queue.map((q: Any) => `<tr data-q="${q.id}"><td><b>${esc(r.networks.find((n: Any) => n.id === q.network)?.label || q.network)}</b>${q.post_title ? `<div class="hint">${esc(q.post_title)}</div>` : ''}</td>
+      <td>${esc(q.body.slice(0, 110))}${q.body.length > 110 ? '...' : ''}${q.error ? `<div class="hint err-text">${esc(q.error)}</div>` : ''}</td>
+      <td><span class="pill ${q.status === 'sent' ? 'published' : q.status === 'failed' ? 'failed' : 'scheduled'}">${STATUS[q.status]}</span></td>
+      <td class="hint">${q.status === 'sent' ? ago(q.sent_at) : q.status === 'queued' ? nzTime(q.send_at) : ago(q.send_at)}</td>
+      <td class="row" style="flex-wrap:nowrap">${q.result_url ? `<a class="btn ghost sm" href="${esc(q.result_url)}" target="_blank" rel="noopener">Open</a>` : ''}${q.status === 'failed' ? '<button class="btn ghost sm" data-retry>Try again</button>' : ''}${q.status === 'queued' || q.status === 'failed' ? '<button class="btn danger sm" data-cancel>Remove</button>' : ''}</td></tr>`).join('')}
+    </tbody></table></div>` : '<div class="soon"><h2>Nothing shared yet</h2><p class="hint">Shares you send or schedule show here, with a link to each one once it is live.</p></div>';
+  main.querySelectorAll<HTMLElement>('[data-q]').forEach((tr) => {
+    tr.querySelector('[data-retry]')?.addEventListener('click', async () => { try { await api('POST', `/social/queue/${tr.dataset.q}/retry`); toast('Trying again.'); setTimeout(() => viewSocial(main), 2500); } catch (e) { fail(e); } });
+    tr.querySelector('[data-cancel]')?.addEventListener('click', async () => { try { await api('DELETE', `/social/queue/${tr.dataset.q}`); viewSocial(main); } catch (e) { fail(e); } });
+  });
+
+  // Share
+  const connected = r.networks.filter((n: Any) => acct(n.id));
+  const box = $('#so-share');
+  if (!connected.length) { box.innerHTML = `<div class="soon"><h2>Connect an account first</h2><p class="hint">${r.canManage ? 'Open Accounts to connect Facebook, Instagram, Bluesky or Mastodon.' : 'Ask the site owner to connect an account.'}</p></div>`; return; }
+  const images: string[] = [];
+  const preset = Number(qs.get('post')) || 0;
+  box.innerHTML = `<div class="share-grid"><div class="card">
+      <label class="f"><span>What to share</span><select id="sh-post"><option value="">Something new (no post)</option>${posts.map((p) => `<option value="${p.id}" ${p.id === preset ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}</select></label>
+      <label class="f" id="sh-link-wrap"><span>Link (optional)</span><input type="text" id="sh-link" inputmode="url" placeholder="https://"></label>
+      <label class="f" id="sh-text-wrap"><span>What it's about</span><textarea id="sh-text" rows="4" placeholder="A few lines. AI can turn this into a version for each network."></textarea></label>
+      <div class="f"><span>Photos</span><div class="row" id="sh-imgs"></div><small class="hint">Instagram needs at least one JPEG photo. Bluesky takes photos under 1 MB.</small></div>
+      <div class="f"><span>Send to</span>${connected.map((n: Any) => `<label class="row"><input type="checkbox" data-net-pick="${n.id}" checked> ${esc(n.label)} <span class="hint">(${esc(acct(n.id).name)})</span></label>`).join('')}</div>
+      ${can('ai.use') ? `<div class="row" style="margin-top:6px">${await aiPicker('sh-ai')}<button class="btn ghost" id="sh-write">Write a version for each</button></div>` : ''}
+    </div>
+    <div class="grid" style="gap:14px" id="sh-versions"></div></div>
+    <div class="card share-send"><label class="f" style="margin:0"><span>When</span><select id="sh-when"><option value="now">Now</option><option value="later">Later</option></select></label>
+      <label class="f" style="margin:0" id="sh-at-wrap" hidden><span>NZ time</span><input type="datetime-local" id="sh-at"></label>
+      <button class="btn" id="sh-go">Share</button></div>`;
+  const versions: Record<string, string> = {};
+  const picked = () => [...box.querySelectorAll<HTMLInputElement>('[data-net-pick]:checked')].map((x) => x.dataset.netPick!);
+  const drawImgs = () => {
+    $('#sh-imgs').innerHTML = images.map((k, i) => `<span class="sh-img"><img src="${esc(mediaUrl(k))}" alt=""><button type="button" data-rmimg="${i}" aria-label="Remove">&times;</button></span>`).join('') + (images.length < 10 ? '<button type="button" class="btn ghost sm" id="sh-add">Add a photo</button>' : '');
+    $('#sh-imgs').querySelectorAll<HTMLElement>('[data-rmimg]').forEach((b) => b.addEventListener('click', () => { images.splice(Number(b.dataset.rmimg), 1); drawImgs(); }));
+    $('#sh-add')?.addEventListener('click', () => pickMedia((k) => { if (!images.includes(k)) images.push(k); drawImgs(); }));
+  };
+  const drawVersions = () => {
+    $('#sh-versions').innerHTML = picked().map((id) => { const n = r.networks.find((x: Any) => x.id === id); return `<div class="card"><label class="f" style="margin:0"><span class="row" style="justify-content:space-between"><b>${esc(n.label)}</b><small class="hint mono" data-count="${id}"></small></span><textarea rows="${id === 'facebook' ? 6 : 4}" data-v="${id}" placeholder="What to say on ${esc(n.label)}">${esc(versions[id] || '')}</textarea></label></div>`; }).join('');
+    $('#sh-versions').querySelectorAll<HTMLTextAreaElement>('[data-v]').forEach((t) => {
+      const id = t.dataset.v!; const lim = r.networks.find((x: Any) => x.id === id).limit;
+      const count = () => { const c = $('#sh-versions').querySelector(`[data-count="${id}"]`) as HTMLElement; c.textContent = `${t.value.length} / ${lim}`; c.classList.toggle('err-text', t.value.length > lim); };
+      t.addEventListener('input', () => { const v = noDash(t.value); if (v !== t.value) t.value = v; versions[id] = t.value; count(); }); count();
+    });
+  };
+  const syncPost = () => { const has = !!($('#sh-post') as HTMLSelectElement).value; ($('#sh-link-wrap') as HTMLElement).hidden = has; ($('#sh-text-wrap') as HTMLElement).hidden = has; };
+  $('#sh-post').addEventListener('change', async () => {
+    syncPost();
+    const id = Number(($('#sh-post') as HTMLSelectElement).value);
+    if (id) { const p = await api<Any>('GET', `/posts/${id}`); if (p.cover && !images.includes(p.cover)) { images.unshift(p.cover); drawImgs(); } }
+  });
+  box.querySelectorAll('[data-net-pick]').forEach((c) => c.addEventListener('change', drawVersions));
+  $('#sh-when').addEventListener('change', () => { ($('#sh-at-wrap') as HTMLElement).hidden = ($('#sh-when') as HTMLSelectElement).value !== 'later'; });
+  $('#sh-write')?.addEventListener('click', (e) => busy(e.currentTarget as HTMLButtonElement, 'Writing...', async () => {
+    try {
+      const postId = Number(($('#sh-post') as HTMLSelectElement).value) || undefined;
+      const x = await api<Any>('POST', '/social/write', { post_id: postId, text: ($('#sh-text') as HTMLTextAreaElement).value, networks: picked(), choice: ($('#sh-ai') as HTMLSelectElement).value });
+      Object.assign(versions, x.versions); drawVersions();
+      toast(`Written by ${providerLabel(x.provider)}. Read them over before you share.`);
+    } catch (err) { fail(err); }
+  }));
+  $('#sh-go').addEventListener('click', (e) => busy(e.currentTarget as HTMLButtonElement, 'Sharing...', async () => {
+    const later = ($('#sh-when') as HTMLSelectElement).value === 'later';
+    const at = ($('#sh-at') as HTMLInputElement).value;
+    if (later && !at) return toast('Pick a time.', true);
+    const items = picked().map((n) => ({ network: n, body: versions[n] || '' })).filter((i) => i.body.trim());
+    if (!items.length) return toast('Write something for at least one network.', true);
+    try {
+      const x = await api<Any>('POST', '/social/share', { post_id: Number(($('#sh-post') as HTMLSelectElement).value) || undefined, link: ($('#sh-link') as HTMLInputElement).value || undefined, images, items, send_at: later ? new Date(at).toISOString() : undefined });
+      toast(x.later ? 'Scheduled.' : 'Sending now. Check "Sent and waiting" for the links.');
+      setTimeout(() => { viewSocial(main).then(() => show('queue')); }, x.later ? 300 : 3500);
+    } catch (err) { fail(err); }
+  }));
+  syncPost(); drawImgs(); drawVersions();
+  if (preset) $('#sh-post').dispatchEvent(new Event('change'));
+}
+
+/** SQLite UTC time to a short NZ time. */
+const nzTime = (s: string) => { const d = new Date(`${String(s).replace(' ', 'T')}Z`); return isNaN(+d) ? s : d.toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }); };
+
+// ---------- Modules ----------
+async function viewModules(main: HTMLElement) {
+  const list = await api<Any[]>('GET', '/modules');
+  main.innerHTML = `<div class="head"><div><h1>Modules</h1><div class="sub">Describe a block in plain English and AI builds it. Preview it, tweak it, then add it to any page from the page editor.</div></div><a class="btn" href="/admin/modules/new" data-link>Build a module</a></div>
+    ${list.length ? `<div class="intg-grid">${list.map((m) => `<div class="card" data-mod="${m.id}"><div class="row" style="justify-content:space-between;gap:10px"><b style="font-size:16px">${esc(m.name)}</b><span class="pill ${m.active ? 'published' : ''}">${m.active ? `Version ${m.version}` : 'Off'}</span></div>
+      <p class="hint" style="margin:6px 0">${esc(m.description)}</p><p class="hint mono" style="margin:0 0 12px">${m.usedOn.length ? `On ${m.usedOn.map((p: Any) => esc(p.title)).join(', ')}` : 'Not on a page yet'}</p>
+      <div class="row"><a class="btn ghost sm" href="/admin/modules/${m.id}" data-link>Open</a><button class="btn ghost sm" data-toggle>${m.active ? 'Switch off' : 'Switch on'}</button><button class="btn danger sm" data-del>Delete</button></div></div>`).join('')}</div>`
+    : '<div class="soon"><h2>No modules yet</h2><p class="hint">Try "a list of the books I\'m reading, with a line about each" or "my next three trips as a simple countdown".</p></div>'}`;
+  main.querySelectorAll<HTMLElement>('[data-mod]').forEach((el) => {
+    const m = list.find((x) => x.id === Number(el.dataset.mod))!;
+    el.querySelector('[data-toggle]')!.addEventListener('click', async () => { await api('PUT', `/modules/${m.id}/active`, { active: !m.active }); viewModules(main); });
+    el.querySelector('[data-del]')!.addEventListener('click', async () => { if (await confirmBox(`Delete "${m.name}" and its history?`, 'Delete')) { try { await api('DELETE', `/modules/${m.id}`); viewModules(main); } catch (e) { fail(e); } } });
+  });
+}
+
+async function viewModuleEditor(main: HTMLElement, id: number | null) {
+  let def: Any = (id ? await api<Any>("GET", `/modules/${id}`) : null) as Any;
+  const ints = can('integrations.manage') ? (await api<Any>('GET', '/integrations')).items.filter((i: Any) => i.kind === 'api') : [];
+  let dirty = false;
+  main.innerHTML = `<div class="head" style="margin-bottom:16px"><div><a class="mono hint" href="/admin/modules" data-link>Modules</a><h1 id="me-title">${esc(def?.name || 'Build a module')}</h1></div>
+    <div class="row">${id ? '<button class="btn ghost sm" id="me-hist">History</button>' : ''}<button class="btn" id="me-save" ${def ? '' : 'disabled'}>${id ? 'Save' : 'Save module'}</button></div></div>
+    <div class="mod-ed"><div class="grid" style="gap:14px;align-content:start">
+      <div class="card"><label class="f"><span>${def ? 'Change it' : 'Describe it'}</span><textarea id="me-ask" rows="4" placeholder="${def ? 'e.g. make the cards two across on a laptop, and add a small date under each title' : 'e.g. the books I\'m reading right now: cover, title, author and a line about each'}"></textarea></label>
+        ${ints.length ? `<details ${def?.source ? 'open' : ''}><summary class="hint">Show live data from an API</summary>
+          <label class="f"><span>Connection</span><select id="me-int"><option value="">None</option>${ints.map((i: Any) => `<option value="${i.id}" ${def?.source?.integration === i.id ? 'selected' : ''}>${esc(i.name)}</option>`).join('')}</select></label>
+          <label class="f"><span>Path</span><input type="text" id="me-path" value="${esc(def?.source?.path || '')}" placeholder="e.g. v1/items?limit=5" spellcheck="false"></label>
+          <label class="f"><span>Refresh every (minutes)</span><input type="number" id="me-cache" min="5" max="1440" value="${def?.source?.cache || 60}"></label></details>` : ''}
+        <div class="row" style="margin-top:8px">${await aiPicker('me-ai')}<button class="btn" id="me-build">${def ? 'Change it' : 'Build it'}</button></div><div id="me-by"></div></div>
+      <div class="card" id="me-detail" ${def ? '' : 'hidden'}>
+        <label class="f"><span>Name</span><input type="text" id="me-name" value="${esc(def?.name || '')}"></label>
+        <label class="f"><span>What it shows</span><input type="text" id="me-desc" value="${esc(def?.description || '')}"></label>
+        <div class="tabs" style="margin:6px 0 10px"><button data-c="sample" class="on">Preview content</button><button data-c="template">Template</button><button data-c="css">Style</button><button data-c="fields">Fields</button></div>
+        <textarea id="me-code" rows="14" spellcheck="false" class="code"></textarea>
+        <p class="hint" id="me-code-hint" style="margin:6px 0 0"></p></div>
+    </div>
+    <div class="frame"><iframe id="me-pv" title="Module preview"></iframe></div></div>`;
+  const pv = $('#me-pv') as HTMLIFrameElement;
+  let tab = 'sample';
+  const HINTS: Record<string, string> = { sample: 'Example content for the preview, as JSON. Each block on a page has its own content.', template: 'HTML with {{placeholders}}. Scripts, forms and event handlers are removed when you save.', css: 'Scoped to this module, so it cannot change anything else on the site.', fields: 'What can be edited on each block, as JSON. Types: text, textarea, rich, url, image, number, toggle, list.' };
+  const codeOf = (t: string) => (t === 'template' ? def.template : t === 'css' ? def.css : JSON.stringify(t === 'fields' ? def.fields : def.sample, null, 2));
+  const showCode = () => { ($('#me-code') as HTMLTextAreaElement).value = codeOf(tab); $('#me-code-hint').textContent = HINTS[tab]; main.querySelectorAll<HTMLElement>('#me-detail .tabs button').forEach((b) => b.classList.toggle('on', b.dataset.c === tab)); };
+  const source = () => { const i = Number(($('#me-int') as HTMLSelectElement | null)?.value); return i ? { integration: i, path: ($('#me-path') as HTMLInputElement).value, cache: Number(($('#me-cache') as HTMLInputElement).value) || 60 } : null; };
+  const refresh = async () => { if (!def) { pv.srcdoc = '<p style="font:14px system-ui;color:#888;padding:24px">Describe a module and press Build it. The preview shows here.</p>'; return; } pv.srcdoc = await api<string>('POST', '/modules/preview', { def: { ...def, source: source() } }); };
+  const markDirty = () => { dirty = true; ($('#me-save') as HTMLButtonElement).disabled = false; };
+  const fill = () => { ($('#me-detail') as HTMLElement).hidden = false; ($('#me-name') as HTMLInputElement).value = def.name; ($('#me-desc') as HTMLInputElement).value = def.description; $('#me-title').textContent = def.name; showCode(); };
+  if (def) showCode();
+  refresh();
+  main.querySelectorAll<HTMLElement>('#me-detail .tabs button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.c!; showCode(); }));
+  let t: number | undefined;
+  $('#me-code').addEventListener('input', () => {
+    clearTimeout(t);
+    t = window.setTimeout(() => {
+      const v = ($('#me-code') as HTMLTextAreaElement).value;
+      try {
+        if (tab === 'template') def.template = v; else if (tab === 'css') def.css = v; else if (tab === 'fields') def.fields = JSON.parse(v); else def.sample = JSON.parse(v);
+        $('#me-code-hint').textContent = HINTS[tab]; markDirty(); refresh();
+      } catch { $('#me-code-hint').textContent = 'That is not valid JSON yet.'; }
+    }, 500);
+  });
+  ['#me-name', '#me-desc'].forEach((s) => $(s).addEventListener('input', () => { def.name = noDash(($('#me-name') as HTMLInputElement).value); def.description = noDash(($('#me-desc') as HTMLInputElement).value); markDirty(); }));
+  ['#me-int', '#me-path', '#me-cache'].forEach((s) => $(s)?.addEventListener('change', () => { if (def) { def.source = source(); markDirty(); refresh(); } }));
+  $('#me-build').addEventListener('click', (e) => busy(e.currentTarget as HTMLButtonElement, def ? 'Changing...' : 'Building...', async () => {
+    try {
+      const x = await api<Any>('POST', '/modules/build', { description: ($('#me-ask') as HTMLTextAreaElement).value, current: def || undefined, choice: ($('#me-ai') as HTMLSelectElement).value, source: source() || undefined });
+      def = { ...(def || {}), ...x.def };
+      $('#me-by').innerHTML = madeBy(x);
+      fill(); markDirty(); await refresh();
+      ($('#me-build') as HTMLButtonElement).textContent = 'Change it';
+    } catch (err) { fail(err); }
+  }));
+  $('#me-save').addEventListener('click', async () => {
+    try {
+      const saved = await api<Any>(id ? 'PUT' : 'POST', id ? `/modules/${id}` : '/modules', { def: { ...def, source: source() ?? def.source ?? null } });
+      dirty = false; toast(id ? 'Saved. Pages using it update straight away.' : 'Saved. Add it to a page from the page editor.');
+      if (!id) go(`/admin/modules/${saved.id}`); else { def = saved; showCode(); }
+    } catch (e) { fail(e); }
+  });
+  $('#me-hist')?.addEventListener('click', async () => {
+    const vs = await api<Any[]>('GET', `/modules/${id}/versions`);
+    const m = modal('Earlier versions', vs.length ? vs.map((v) => `<div class="row" style="justify-content:space-between;border-top:1px solid var(--line);padding:8px 0"><span>Version ${v.version}<div class="hint">${esc(v.note || '')}, ${ago(v.created_at)}</div></span><button class="btn ghost sm" data-v="${v.id}">Go back to this</button></div>`).join('') : '<p class="hint">No earlier versions yet.</p>');
+    m.el.querySelectorAll<HTMLElement>('[data-v]').forEach((b) => b.addEventListener('click', async () => { try { def = await api('POST', `/modules/${id}/restore/${b.dataset.v}`); m.close(); fill(); refresh(); toast('Restored. The version before is kept in History.'); } catch (e) { fail(e); } }));
+  });
+  const leave = (e: BeforeUnloadEvent) => { if (dirty) e.preventDefault(); };
+  window.addEventListener('beforeunload', leave);
+  cleanup = () => window.removeEventListener('beforeunload', leave);
+}
+
+const moduleCache = new Map<string, Any>();
+async function moduleBySlug(slug: string) {
+  if (!moduleCache.has(slug)) moduleCache.set(slug, await api('GET', `/modules/slug/${encodeURIComponent(slug)}`));
+  return moduleCache.get(slug);
+}
+
+/** The settings panel for a module block: one input per field the module defines. */
+async function modulePanel(el: HTMLElement, b: Any, changed: (full: boolean) => void) {
+  let m: Any;
+  try { m = (await moduleBySlug(b.data.module))!; } catch { el.innerHTML = '<p class="hint" style="margin:0">This module was deleted. Remove the block, or build the module again.</p>'; return; }
+  const input = (f: Any, path: string, v: any): string => {
+    const lab = `<span>${esc(f.label)}</span>`;
+    const help = f.help ? `<small class="hint">${esc(f.help)}</small>` : '';
+    if (f.type === 'image') return `<label class="f">${lab}<div class="row">${v ? `<img src="${esc(mediaUrl(v))}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:3px">` : ''}<button type="button" class="btn ghost sm" data-pick="${esc(path)}">${v ? 'Change' : 'Choose'}</button>${v ? `<button type="button" class="btn ghost sm" data-clear="${esc(path)}">Remove</button>` : ''}</div>${help}</label>`;
+    if (f.type === 'toggle') return `<label class="row" style="margin-bottom:12px"><input type="checkbox" data-p="${esc(path)}" data-kind="toggle" ${v ? 'checked' : ''}> ${esc(f.label)}</label>`;
+    if (f.type === 'number') return `<label class="f">${lab}<input type="number" data-p="${esc(path)}" data-kind="number" value="${Number(v) || 0}">${help}</label>`;
+    if (f.type === 'textarea' || f.type === 'rich') return `<label class="f">${lab}<textarea rows="3" data-p="${esc(path)}">${esc(v ?? '')}</textarea>${f.type === 'rich' ? '<small class="hint">Simple HTML is fine: &lt;p&gt;, &lt;b&gt;, &lt;a&gt;.</small>' : help}</label>`;
+    return `<label class="f">${lab}<input type="text" ${f.type === 'url' ? 'inputmode="url" placeholder="https:// or /page"' : ''} data-p="${esc(path)}" value="${esc(v ?? '')}">${help}</label>`;
+  };
+  let html = `<p class="hint mono" style="margin:0 0 10px">${esc(m.name)} module, version ${m.version}</p>`;
+  for (const f of m.fields) {
+    if (f.type !== 'list') { html += input(f, f.key, b.data[f.key]); continue; }
+    if (!Array.isArray(b.data[f.key])) b.data[f.key] = [];
+    html += `<div class="mono hint" style="margin:6px 0 8px">${esc(f.label)}</div>` + b.data[f.key].map((it: Any, i: number) => `<div class="item">${(f.fields || []).map((sf: Any) => input(sf, `${f.key}.${i}.${sf.key}`, it?.[sf.key])).join('')}
+      <div class="row"><button type="button" class="btn ghost sm" data-mv="${f.key}.${i}.-1">&uarr;</button><button type="button" class="btn ghost sm" data-mv="${f.key}.${i}.1">&darr;</button><button type="button" class="btn danger sm" data-rm="${f.key}.${i}">Remove</button></div></div>`).join('') +
+      `<button type="button" class="btn ghost sm" data-addi="${esc(f.key)}">Add ${esc(f.label.toLowerCase().replace(/s$/, ''))}</button>`;
+  }
+  html += `<p style="margin:12px 0 0"><a class="hint" href="/admin/modules/${m.id}" data-link>Change how this module looks</a></p>`;
+  el.innerHTML = html;
+  el.querySelectorAll<HTMLInputElement>('[data-p]').forEach((inp) => {
+    const val = () => (inp.dataset.kind === 'toggle' ? inp.checked : inp.dataset.kind === 'number' ? Number(inp.value) : noDash(inp.value));
+    inp.addEventListener('input', () => { setPath(b.data, inp.dataset.p!, val()); changed(false); });
+    inp.addEventListener('change', () => { setPath(b.data, inp.dataset.p!, val()); changed(true); });
+  });
+  el.querySelectorAll<HTMLElement>('[data-pick]').forEach((btn) => btn.addEventListener('click', () => pickMedia((key) => { setPath(b.data, btn.dataset.pick!, key); changed(true); })));
+  el.querySelectorAll<HTMLElement>('[data-clear]').forEach((btn) => btn.addEventListener('click', () => { setPath(b.data, btn.dataset.clear!, ''); changed(true); }));
+  el.querySelectorAll<HTMLElement>('[data-rm]').forEach((btn) => btn.addEventListener('click', () => { const [k, i] = btn.dataset.rm!.split('.'); b.data[k].splice(Number(i), 1); changed(true); }));
+  el.querySelectorAll<HTMLElement>('[data-mv]').forEach((btn) => btn.addEventListener('click', () => {
+    const [k, i, d] = btn.dataset.mv!.split('.'); const a = b.data[k]; const from = Number(i); const to = from + Number(d);
+    if (to < 0 || to >= a.length) return; [a[from], a[to]] = [a[to], a[from]]; changed(true);
+  }));
+  el.querySelectorAll<HTMLElement>('[data-addi]').forEach((btn) => btn.addEventListener('click', () => {
+    const f = m.fields.find((x: Any) => x.key === btn.dataset.addi);
+    b.data[f.key].push(Object.fromEntries((f.fields || []).map((sf: Any) => [sf.key, sf.type === 'toggle' ? false : sf.type === 'number' ? 0 : ''])));
+    changed(true);
+  }));
 }
 
 // ---------- Boot ----------

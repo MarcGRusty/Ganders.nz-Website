@@ -4,6 +4,8 @@ import type { Env } from './types';
 import api from './routes/api';
 import admin from './routes/admin';
 import site from './routes/public';
+import { fireEvent } from './lib/integrations';
+import { processQueue, unstick } from './lib/social';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -29,10 +31,14 @@ app.route('/', site);
 
 export default {
   fetch: app.fetch,
-  /** Every 5 minutes: publish anything scheduled whose time has come. */
+  /** Every 5 minutes: publish anything scheduled whose time has come, then send due social shares. */
   async scheduled(_e: ScheduledController, env: Env) {
-    await env.DB.prepare(
-      "UPDATE posts SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE status='scheduled' AND publish_at IS NOT NULL AND publish_at <= datetime('now')"
-    ).run();
+    const { results } = await env.DB.prepare(
+      "UPDATE posts SET status='published', published_at=datetime('now'), updated_at=datetime('now') WHERE status='scheduled' AND publish_at IS NOT NULL AND publish_at <= datetime('now') RETURNING id, slug, title, excerpt"
+    ).all<{ id: number; slug: string; title: string; excerpt: string }>();
+    const base = (env.SITE_URL || '').replace(/\/$/, '');
+    for (const p of results) await fireEvent(env, 'post.published', { id: p.id, title: p.title, excerpt: p.excerpt, url: `${base}/writing/${p.slug}` });
+    await unstick(env);
+    await processQueue(env);
   },
 } satisfies ExportedHandler<Env>;
