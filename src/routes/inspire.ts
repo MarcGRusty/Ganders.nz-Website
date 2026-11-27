@@ -115,6 +115,7 @@ Inspiration:
 ${notes.join('\n\n')}
 
 Rules:
+- Give it a quiet New Zealand feel where it fits (light, coast, weather, bush, bach, harbour), without Maori patterns or motifs such as koru or kowhaiwhai.
 - Avoid the generic AI look: no purple or violet accents, no cream background with a serif and terracotta, no big rounded corners everywhere, no soft glows.
 - Text on background must reach at least 7:1 contrast, quiet text 4.5:1, text on the accent 4.5:1, in both light and dark.
 - Design the dark palette on its own terms (a warmer or lighter accent at night), not an inversion.

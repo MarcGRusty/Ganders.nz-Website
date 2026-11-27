@@ -11,7 +11,7 @@ export const DEFAULT_SETTINGS: SiteSettings = {
   logo: null,
   favicon: null,
   socials: [],
-  footer: 'Made in Te Whanganui-a-Tara.',
+  footer: 'Made in Wellington, New Zealand.',
   theme: DEFAULT_THEME,
   themes: [],
 };
