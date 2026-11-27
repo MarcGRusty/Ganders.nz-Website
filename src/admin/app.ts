@@ -395,9 +395,30 @@ async function showHistory(entity: string, id: number, restore: (d: Any) => void
 }
 
 // ---------- Media ----------
+/**
+ * Photos are redrawn in the browser before upload: this removes hidden location and camera data
+ * (privacy rule), fixes sideways phone photos, and keeps them to a sensible size.
+ */
+async function cleanPhoto(f: File): Promise<File> {
+  if (!/^image\/(jpeg|png|webp)$/.test(f.type)) return f;
+  try {
+    const bmp = await createImageBitmap(f, { imageOrientation: 'from-image' } as ImageBitmapOptions);
+    const scale = Math.min(1, 2560 / Math.max(bmp.width, bmp.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(bmp.width * scale); cv.height = Math.round(bmp.height * scale);
+    cv.getContext('2d')!.drawImage(bmp, 0, 0, cv.width, cv.height);
+    bmp.close();
+    const type = f.type === 'image/png' ? 'image/png' : f.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+    const blob = await new Promise<Blob | null>((res) => cv.toBlob(res, type, 0.88));
+    if (!blob) return f;
+    return new File([blob], f.name, { type });
+  } catch { return f; }
+}
+
 async function uploadFiles(files: FileList | File[]) {
   const out: Any[] = [];
-  for (const f of Array.from(files)) {
+  for (const raw of Array.from(files)) {
+    const f = await cleanPhoto(raw);
     const fd = new FormData();
     fd.append('file', f);
     try { out.push(await api('POST', '/media', fd)); } catch (e) { fail(e); }
@@ -408,7 +429,7 @@ async function uploadFiles(files: FileList | File[]) {
 
 function mediaGrid(items: Any[]) {
   return `<div class="media-grid">${items.map((m) => `<div class="m" data-key="${esc(m.key)}" data-id="${m.id}">
-    ${m.type.startsWith('image/') ? `<img src="/media/${esc(m.key)}" alt="${esc(m.alt)}" loading="lazy">` : `<div class="doc mono">${esc(m.type.split('/')[1])}</div>`}
+    ${m.type.startsWith('image/') ? `<img src="/media/${esc(m.key)}" alt="${esc(m.alt)}" loading="lazy"${m.focus_x != null ? ` style="object-position:${m.focus_x}% ${m.focus_y}%"` : ''}>` : `<div class="doc mono">${esc(m.type.split('/')[1])}</div>`}
     <span>${esc(m.name)}</span></div>`).join('')}</div>`;
 }
 
@@ -439,19 +460,46 @@ async function viewMedia(main: HTMLElement) {
   main.innerHTML = `<div class="head"><div><h1>Media</h1><div class="sub">Photos, logos and files. Photos are stored on Cloudflare and served fast everywhere.</div></div></div>
     <div class="drop" id="drop">Drop files here, or click to upload (up to 25 MB each)</div><div id="grid">${items.length ? mediaGrid(items) : '<p class="hint">Nothing uploaded yet.</p>'}</div>`;
   dropZone($('#drop'), async (f) => { await uploadFiles(f); viewMedia(main); });
-  main.querySelectorAll<HTMLElement>('.m').forEach((x) => x.addEventListener('click', () => {
-    const it = items.find((i) => String(i.id) === x.dataset.id)!;
-    const md = modal(it.name, `${it.type.startsWith('image/') ? `<img src="/media/${esc(it.key)}" alt="" style="max-height:50vh;margin:0 auto 16px;border-radius:4px">` : ''}
-      <label class="f"><span>Description for screen readers</span><input type="text" id="alt" value="${esc(it.alt)}"></label>
-      <label class="f"><span>Address</span><input type="text" readonly value="${esc(location.origin)}/media/${esc(it.key)}"></label>
-      <p class="hint">${(it.size / 1024).toFixed(0)} KB, ${esc(it.type)}, added ${ago(it.created_at)}</p>
-      <div class="row"><button class="btn" id="alt-save">Save</button><button class="btn danger" id="m-del">Delete</button></div>`);
-    md.el.querySelector('#alt-save')!.addEventListener('click', async () => { await api('PUT', `/media/${it.id}`, { alt: ($('#alt') as HTMLInputElement).value }); md.close(); toast('Saved.'); });
-    md.el.querySelector('#m-del')!.addEventListener('click', async () => {
-      if (!(await confirmBox('Delete this file? Pages using it will show a gap.', 'Delete file'))) return;
-      await api('DELETE', `/media/${it.id}`); md.close(); viewMedia(main);
+  main.querySelectorAll<HTMLElement>('.m').forEach((x) => x.addEventListener('click', () => mediaDetail(items.find((i) => String(i.id) === x.dataset.id)!, () => viewMedia(main))));
+}
+
+const FOCUS_NOTE: Record<string, string> = { auto: 'Found automatically. Click the photo to move it.', manual: 'Set by you. Click the photo to move it.', none: 'No people found. Click the photo to choose what to keep in frame.' };
+function mediaDetail(it: Any, done: () => void) {
+  const isPhoto = /^image\/(jpeg|png|webp|gif|avif)$/.test(it.type);
+  const md = modal(it.name, `${isPhoto ? `<div class="focus-pick"><img src="/media/${esc(it.key)}" alt="" id="fp-img"><i id="fp-dot"></i></div>
+      <p class="hint" id="fp-note" style="margin:8px 0 4px">${FOCUS_NOTE[it.focus_source] || 'Click the photo on the part that must always stay in frame, such as a face.'}</p>
+      <div class="row" style="margin-bottom:12px"><button class="btn ghost sm" id="fp-auto">Find faces again</button><button class="btn ghost sm" id="fp-centre">Use the centre</button></div>
+      <div class="mono hint" style="margin-bottom:6px">How it crops</div><div class="crops" id="fp-crops">${['1/1', '4/5', '16/9', '3/1'].map((r) => `<div style="aspect-ratio:${r}"><img src="/media/${esc(it.key)}" alt=""></div>`).join('')}</div>` : it.type.startsWith('image/') ? `<img src="/media/${esc(it.key)}" alt="" style="max-height:40vh;margin:0 auto 16px">` : ''}
+    <label class="f"><span>Description for screen readers</span><input type="text" id="alt" value="${esc(it.alt)}"></label>
+    <label class="f"><span>Address</span><input type="text" readonly value="${esc(location.origin)}/media/${esc(it.key)}"></label>
+    <p class="hint">${(it.size / 1024).toFixed(0)} KB${it.width ? `, ${it.width} by ${it.height}` : ''}, ${esc(it.type)}, added ${ago(it.created_at)}</p>
+    <div class="row"><button class="btn" id="alt-save">Save</button><button class="btn danger" id="m-del">Delete</button></div>`);
+  const show = () => {
+    const x = it.focus_x ?? 50, y = it.focus_y ?? 50;
+    const dot = md.el.querySelector<HTMLElement>('#fp-dot');
+    if (!dot) return;
+    dot.style.left = `${x}%`; dot.style.top = `${y}%`; dot.hidden = it.focus_x == null;
+    md.el.querySelectorAll<HTMLImageElement>('#fp-crops img').forEach((i) => { i.style.objectPosition = `${x}% ${y}%`; });
+    md.el.querySelector('#fp-note')!.textContent = FOCUS_NOTE[it.focus_source] || 'Click the photo on the part that must always stay in frame, such as a face.';
+  };
+  const save = async (focus: { x: number; y: number } | null) => { try { Object.assign(it, await api('PUT', `/media/${it.id}`, { focus })); show(); } catch (e) { fail(e); } };
+  md.el.querySelector('#fp-img')?.addEventListener('click', (e) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const ev = e as MouseEvent;
+    save({ x: ((ev.clientX - r.left) / r.width) * 100, y: ((ev.clientY - r.top) / r.height) * 100 });
+  });
+  md.el.querySelector('#fp-centre')?.addEventListener('click', () => save(null));
+  md.el.querySelector('#fp-auto')?.addEventListener('click', async (e) => {
+    await busy(e.currentTarget as HTMLButtonElement, 'Looking...', async () => {
+      try { const r = await api('POST', `/media/${it.id}/focus`); Object.assign(it, r.media); show(); toast(r.focus ? 'Found them. The crop now follows the faces.' : 'No people found in this one.'); } catch (err) { fail(err); }
     });
-  }));
+  });
+  show();
+  md.el.querySelector('#alt-save')!.addEventListener('click', async () => { await api('PUT', `/media/${it.id}`, { alt: ($('#alt') as HTMLInputElement).value }); md.close(); toast('Saved.'); done(); });
+  md.el.querySelector('#m-del')!.addEventListener('click', async () => {
+    if (!(await confirmBox('Delete this file? Pages using it will show a gap.', 'Delete file'))) return;
+    await api('DELETE', `/media/${it.id}`); md.close(); done();
+  });
 }
 
 // ---------- Writing ----------

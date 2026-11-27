@@ -1,5 +1,6 @@
 import type { Block, Post } from '../types';
 import { esc, clean, mediaUrl, fmtDate } from './html';
+import { focusPos } from './focus';
 
 export interface RenderCtx {
   edit: boolean;
@@ -28,7 +29,7 @@ const renderers: Record<string, R> = {
         <h1${ed(ctx, 'heading')}${ctx.edit ? ' data-md="1"' : ''}>${h}</h1>
         <div class="lede"${ed(ctx, 'body', true)}>${clean(d.body)}</div>
       </div>
-      ${img || ctx.edit ? `<figure class="rise"${imgEd(ctx, 'image')}>${img ? `<img src="${esc(img)}" alt="${esc(d.alt || '')}">` : '<div class="mono empty" style="aspect-ratio:4/5;display:grid;place-items:center;border:1px dashed currentColor">Add a photo</div>'}</figure>` : ''}
+      ${img || ctx.edit ? `<figure class="rise"${imgEd(ctx, 'image')}>${img ? `<img src="${esc(img)}" alt="${esc(d.alt || '')}" style="${focusPos(d.image)}">` : '<div class="mono empty" style="aspect-ratio:4/5;display:grid;place-items:center;border:1px dashed currentColor">Add a photo</div>'}</figure>` : ''}
     </div></section>`;
   },
 
@@ -47,7 +48,7 @@ const renderers: Record<string, R> = {
   image: ({ data: d }, ctx) => {
     const src = mediaUrl(d.src);
     return `<section class="sec"><div class="wrap"><figure class="figure rise" style="margin:0"${imgEd(ctx, 'src')}>
-      ${src ? `<img src="${esc(src)}" alt="${esc(d.alt)}" loading="lazy" style="width:100%;border-radius:var(--r)">` : ctx.edit ? '<div class="mono empty" style="padding:80px;text-align:center;border:1px dashed currentColor">Click to choose an image</div>' : ''}
+      ${src ? `<img src="${esc(src)}" alt="${esc(d.alt)}" loading="lazy" style="width:100%;border-radius:min(var(--r),16px);${focusPos(d.src)}">` : ctx.edit ? '<div class="mono empty" style="padding:80px;text-align:center;border:1px dashed currentColor">Click to choose an image</div>' : ''}
       <figcaption class="mono"${ed(ctx, 'caption')}>${esc(d.caption)}</figcaption></figure></div></section>`;
   },
 

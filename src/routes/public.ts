@@ -5,6 +5,7 @@ import { renderBlocks } from '../render/blocks';
 import { layout } from '../render/layout';
 import { esc, clean, mediaUrl, fmtDate } from '../render/html';
 import { currentUser } from '../lib/auth';
+import { loadFocus, focusPos } from '../render/focus';
 import { sendMail, mailReady, ownerAddress, wrapHtml, textToHtml } from '../lib/mail';
 
 const app = new Hono<{ Bindings: Env }>();
@@ -16,7 +17,7 @@ async function renderPage(c: any, slug: string) {
   await ensureSeed(c.env);
   const page = await getPage(c.env, slug, edit);
   if (!page) return notFound(c);
-  const [s, menu, posts] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 })]);
+  const [s, menu, posts] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 }), loadFocus(c.env)]);
   const body = renderBlocks(page.blocks, { edit, posts });
   const html = layout(s, { title: slug === 'home' ? '' : page.title, description: page.seo.description, image: page.seo.image, path: slug === 'home' ? '/' : `/${slug}`, menu, body, edit, siteUrl: site(c) });
   return c.html(html, 200, edit ? { 'Cache-Control': 'no-store' } : { 'Cache-Control': 'public, max-age=0, s-maxage=30' });
@@ -43,12 +44,12 @@ app.get('/writing/:slug', async (c) => {
   const preview = c.req.query('preview') === '1' && !!(await currentUser(c));
   const post = await getPost(c.env, c.req.param('slug'), preview);
   if (!post) return notFound(c);
-  const [s, menu] = await Promise.all([getSettings(c.env), menuPages(c.env)]);
+  const [s, menu] = await Promise.all([getSettings(c.env), menuPages(c.env), loadFocus(c.env)]);
   const body = `<article class="article"><div class="wrap">
     <p class="mono" style="color:var(--accent)">${post.tags.map(esc).join(' / ') || 'Writing'}</p>
     <h1>${esc(post.title)}</h1>
     <p class="mono meta">${post.published_at ? fmtDate(post.published_at) : `Preview, ${esc(post.status)}`}</p>
-    ${post.cover ? `<img class="cover" src="${esc(mediaUrl(post.cover))}" alt="">` : ''}
+    ${post.cover ? `<img class="cover" src="${esc(mediaUrl(post.cover))}" alt="" style="${focusPos(post.cover)}">` : ''}
     <div class="prose">${clean(post.body)}</div>
     <p style="margin-top:64px"><a class="mono" href="/writing">More writing</a></p></div></article>`;
   return c.html(layout(s, { title: post.title, description: post.excerpt, image: post.cover ?? undefined, path: `/writing/${post.slug}`, menu, body, siteUrl: site(c) }));

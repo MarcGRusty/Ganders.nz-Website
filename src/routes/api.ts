@@ -10,6 +10,8 @@ import { ensureSeed, getSettings, saveSettings, listPages, getPageById, listPost
 import { guard, guardDeep } from '../lib/style-guard';
 import { BLOCK_TYPES, newBlock } from '../lib/defaults';
 import { normalizeTheme, PRESETS } from '../lib/themes';
+import { autoFocus } from '../lib/focus';
+import { loadFocus } from '../render/focus';
 import { sendMail, mailReady, ownerAddress, fromAddress, wrapHtml, textToHtml } from '../lib/mail';
 
 type Vars = { Bindings: Env; Variables: { uid: number; user: any } };
@@ -207,12 +209,27 @@ api.post('/media', need('media.upload'), async (c) => {
   await c.env.MEDIA.put(key, file.stream(), { httpMetadata: { contentType: file.type } });
   const r = await c.env.DB.prepare('INSERT INTO media (key, name, type, size, alt) VALUES (?, ?, ?, ?, ?) RETURNING *')
     .bind(key, file.name, file.type, file.size, String(form.alt || '')).first();
+  // Find faces for smart cropping in the background, so the upload returns straight away.
+  if (/^image\/(jpe?g|png|webp)$/.test(file.type)) c.executionCtx.waitUntil(autoFocus(c.env, key));
   return c.json(r, 201);
 });
 api.put('/media/:id{[0-9]+}', need('media.upload'), async (c) => {
-  const { alt } = guardDeep(await c.req.json<{ alt: string }>());
-  await c.env.DB.prepare('UPDATE media SET alt = ? WHERE id = ?').bind(alt || '', Number(c.req.param('id'))).run();
-  return c.json({ ok: true });
+  const b = guardDeep(await c.req.json<{ alt?: string; focus?: { x: number; y: number } | null }>());
+  const id = Number(c.req.param('id'));
+  if (b.alt !== undefined) await c.env.DB.prepare('UPDATE media SET alt = ? WHERE id = ?').bind(b.alt || '', id).run();
+  if (b.focus === null) await c.env.DB.prepare("UPDATE media SET focus_x = NULL, focus_y = NULL, focus_source = 'manual' WHERE id = ?").bind(id).run();
+  else if (b.focus) {
+    const clamp = (v: number) => Math.round(Math.min(100, Math.max(0, Number(v) || 0)) * 10) / 10;
+    await c.env.DB.prepare("UPDATE media SET focus_x = ?, focus_y = ?, focus_source = 'manual' WHERE id = ?").bind(clamp(b.focus.x), clamp(b.focus.y), id).run();
+  }
+  return c.json(await c.env.DB.prepare('SELECT * FROM media WHERE id = ?').bind(id).first());
+});
+api.post('/media/:id{[0-9]+}/focus', need('media.upload'), async (c) => {
+  const m = await c.env.DB.prepare('SELECT key FROM media WHERE id = ?').bind(Number(c.req.param('id'))).first<{ key: string }>();
+  if (!m) return c.json({ error: 'Not found' }, 404);
+  if (!c.env.AI) return c.json({ error: 'Face finding runs on the live site, not in local testing.' }, 400);
+  const f = await autoFocus(c.env, m.key, true);
+  return c.json({ focus: f, media: await c.env.DB.prepare('SELECT * FROM media WHERE key = ?').bind(m.key).first() });
 });
 api.delete('/media/:id{[0-9]+}', need('media.delete'), async (c) => {
   const m = await c.env.DB.prepare('SELECT key FROM media WHERE id = ?').bind(Number(c.req.param('id'))).first<{ key: string }>();
@@ -315,6 +332,7 @@ api.get('/stats', async (c) => {
 api.post('/preview', async (c) => {
   const b = await c.req.json<{ slug?: string; title?: string; blocks?: any[]; theme?: any; settings?: any; edit?: boolean }>();
   const s = await getSettings(c.env);
+  await loadFocus(c.env);
   const settings = { ...s, ...(b.settings || {}), theme: b.theme ? normalizeTheme({ ...s.theme, ...b.theme }) : s.theme };
   let blocks = b.blocks;
   if (!blocks) {
