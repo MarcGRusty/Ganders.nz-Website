@@ -1,0 +1,33 @@
+{
+  "name": "ganders-nz",
+  "version": "1.0.0",
+  "description": "ganders.nz: personal site and Studio CMS on Cloudflare Workers",
+  "scripts": {
+    "build:admin": "esbuild src/admin/app.ts --bundle --minify --format=esm --target=es2022 --outfile=public/admin/assets/app.js",
+    "dev": "npm run build:admin && node scripts/local-config.mjs && wrangler dev -c wrangler.local.jsonc",
+    "db:migrate:local": "node scripts/local-config.mjs && wrangler d1 migrations apply ganders-nz --local -c wrangler.local.jsonc",
+    "db:migrate": "wrangler d1 migrations apply ganders-nz --remote",
+    "deploy": "npm run build:admin && wrangler deploy",
+    "typecheck": "tsc && tsc -p src/admin",
+    "test": "vitest run",
+    "check:dashes": "node scripts/check-dashes.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
+    "hono": "^4.13.23"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261127.1",
+    "@tiptap/core": "^3.35.0",
+    "@tiptap/extension-image": "^3.35.0",
+    "@tiptap/extension-link": "^3.35.0",
+    "@tiptap/extension-placeholder": "^3.35.0",
+    "@tiptap/starter-kit": "^3.35.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.2",
+    "wrangler": "^4.168.0"
+  },
+  "private": true,
+  "type": "module"
+}

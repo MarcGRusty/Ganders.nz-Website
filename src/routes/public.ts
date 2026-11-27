@@ -1,0 +1,194 @@
+import { Hono } from 'hono';
+import type { Env } from '../types';
+import { getSettings, getPage, getPost, listPosts, menuPages, ensureSeed } from '../lib/db';
+import { renderBlocks } from '../render/blocks';
+import { layout } from '../render/layout';
+import { esc, clean, mediaUrl, fmtDate } from '../render/html';
+import { currentUser } from '../lib/auth';
+import { loadFocus, focusPos } from '../render/focus';
+import { sendMail, mailReady, ownerAddress, wrapHtml, textToHtml } from '../lib/mail';
+import { fireEvent, hmac, sameText, logIntegration, type Integration } from '../lib/integrations';
+import { open } from '../lib/crypto';
+import { loadModules } from '../lib/modules';
+
+const app = new Hono<{ Bindings: Env }>();
+
+const site = (c: any) => (c.env.SITE_URL || new URL(c.req.url).origin).replace(/\/$/, '');
+
+async function renderPage(c: any, slug: string) {
+  const edit = c.req.query('edit') === '1' && !!(await currentUser(c));
+  await ensureSeed(c.env);
+  const page = await getPage(c.env, slug, edit);
+  if (!page) return notFound(c);
+  const [s, menu, posts, , modules] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published', limit: 12 }), loadFocus(c.env), loadModules(c.env, page.blocks)]);
+  const body = renderBlocks(page.blocks, { edit, posts, modules });
+  const html = layout(s, { title: slug === 'home' ? '' : page.title, description: page.seo.description, image: page.seo.image, path: slug === 'home' ? '/' : `/${slug}`, menu, body, edit, siteUrl: site(c) });
+  return c.html(html, 200, edit ? { 'Cache-Control': 'no-store' } : { 'Cache-Control': 'public, max-age=0, s-maxage=30' });
+}
+
+async function notFound(c: any) {
+  const [s, menu] = await Promise.all([getSettings(c.env), menuPages(c.env)]);
+  const body = `<section class="article"><div class="wrap"><p class="mono" style="color:var(--accent)">404</p><h1>This page wandered off.</h1>
+    <p class="meta">It might have moved, or it never existed. <a href="/">Head back home</a>.</p></div></section>`;
+  return c.html(layout(s, { title: 'Not found', path: c.req.path, menu, body, siteUrl: site(c) }), 404);
+}
+
+app.get('/', (c) => renderPage(c, 'home'));
+
+app.get('/writing', async (c) => {
+  const [s, menu, posts] = await Promise.all([getSettings(c.env), menuPages(c.env), listPosts(c.env, { status: 'published' })]);
+  const body = `<section class="article"><div class="wrap"><p class="mono" style="color:var(--accent)">Writing</p><h1>Notes, essays and things I've figured out.</h1>
+    <ul class="plist" style="margin-top:56px">${posts.map((p) => `<li><a href="/writing/${esc(p.slug)}"><h3>${esc(p.title)}</h3>
+    <span class="mono d">${fmtDate(p.published_at)}</span>${p.excerpt ? `<p>${esc(p.excerpt)}</p>` : ''}</a></li>`).join('') || '<li class="empty">Nothing here yet.</li>'}</ul></div></section>`;
+  return c.html(layout(s, { title: 'Writing', path: '/writing', menu, body, siteUrl: site(c) }));
+});
+
+app.get('/writing/:slug', async (c) => {
+  const preview = c.req.query('preview') === '1' && !!(await currentUser(c));
+  const post = await getPost(c.env, c.req.param('slug'), preview);
+  if (!post) return notFound(c);
+  const [s, menu] = await Promise.all([getSettings(c.env), menuPages(c.env), loadFocus(c.env)]);
+  const body = `<article class="article"><div class="wrap">
+    <p class="mono" style="color:var(--accent)">${post.tags.map(esc).join(' / ') || 'Writing'}</p>
+    <h1>${esc(post.title)}</h1>
+    <p class="mono meta">${post.published_at ? fmtDate(post.published_at) : `Preview, ${esc(post.status)}`}</p>
+    ${post.cover ? `<img class="cover" src="${esc(mediaUrl(post.cover))}" alt="" style="${focusPos(post.cover)}">` : ''}
+    <div class="prose">${clean(post.body)}</div>
+    <p style="margin-top:64px"><a class="mono" href="/writing">More writing</a></p></div></article>`;
+  return c.html(layout(s, { title: post.title, description: post.excerpt, image: post.cover ?? undefined, path: `/writing/${post.slug}`, menu, body, siteUrl: site(c) }));
+});
+
+app.get('/media/:key{.+}', async (c) => {
+  const obj = await c.env.MEDIA.get(c.req.param('key'));
+  if (!obj) return c.text('Not found', 404);
+  const h = new Headers();
+  obj.writeHttpMetadata(h);
+  h.set('etag', obj.httpEtag);
+  h.set('Cache-Control', 'public, max-age=31536000, immutable');
+  return new Response(obj.body, { headers: h });
+});
+
+app.get('/favicon.svg', async (c) => {
+  const s = await getSettings(c.env);
+  const letter = esc((s.name || 'G').trim()[0]?.toUpperCase() || 'G');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="${Math.min(s.theme.radius * 4, 14)}" fill="${esc(s.theme.light.ink)}"/><text x="32" y="46" text-anchor="middle" font-family="Georgia,serif" font-size="42" fill="${esc(s.theme.light.paper)}">${letter}</text><circle cx="50" cy="16" r="5" fill="${esc(s.theme.light.accent)}"/></svg>`;
+  return c.body(svg, 200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=300' });
+});
+app.get('/favicon.ico', async (c) => {
+  const s = await getSettings(c.env);
+  return c.redirect(s.favicon ? mediaUrl(s.favicon) : '/favicon.svg', 302);
+});
+
+app.get('/robots.txt', (c) => c.text(`User-agent: *\nDisallow: /admin\nDisallow: /api\nSitemap: ${site(c)}/sitemap.xml\n`));
+
+app.get('/sitemap.xml', async (c) => {
+  const [{ results: pages }, posts] = await Promise.all([
+    c.env.DB.prepare("SELECT slug, updated_at FROM pages WHERE status = 'published'").all<{ slug: string; updated_at: string }>(),
+    listPosts(c.env, { status: 'published' }),
+  ]);
+  const u = (p: string, d: string) => `<url><loc>${esc(site(c) + p)}</loc><lastmod>${esc(d.slice(0, 10))}</lastmod></url>`;
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${pages.map((p) => u(p.slug === 'home' ? '/' : `/${p.slug}`, p.updated_at)).join('')}${posts.map((p) => u(`/writing/${p.slug}`, p.updated_at)).join('')}</urlset>`;
+  return c.body(xml, 200, { 'Content-Type': 'application/xml' });
+});
+
+app.get('/rss.xml', async (c) => {
+  const [s, posts] = await Promise.all([getSettings(c.env), listPosts(c.env, { status: 'published', limit: 30 })]);
+  const items = posts.map((p) => `<item><title>${esc(p.title)}</title><link>${esc(`${site(c)}/writing/${p.slug}`)}</link><guid>${esc(`${site(c)}/writing/${p.slug}`)}</guid><pubDate>${new Date((p.published_at || p.updated_at).replace(' ', 'T') + 'Z').toUTCString()}</pubDate><description>${esc(p.excerpt)}</description></item>`).join('');
+  return c.body(`<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>${esc(s.name)}</title><link>${esc(site(c))}</link><description>${esc(s.tagline)}</description>${items}</channel></rss>`, 200, { 'Content-Type': 'application/rss+xml' });
+});
+
+app.post('/contact', async (c) => {
+  const f = await c.req.parseBody();
+  // Only ever send people back to a page on this site.
+  const b = String(f.back || '/');
+  const back = /^\/[a-z0-9\-\/]*$/i.test(b) && !b.startsWith('//') ? b : '/';
+  if (f.website) return c.redirect('/?sent=1', 303); // honeypot
+  const name = String(f.name || '').slice(0, 120).trim();
+  const email = String(f.email || '').slice(0, 200).trim();
+  const body = String(f.body || '').slice(0, 5000).trim();
+  if (!name || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !body) return c.redirect(`${back}?sent=0#contact`, 303);
+  // Simple rate limit: 5 messages per IP per hour.
+  const ip = c.req.header('cf-connecting-ip') || 'local';
+  const k = `rl:contact:${ip}`;
+  const count = Number((await c.env.KV.get(k)) || 0);
+  if (count >= 5) return c.redirect(`${back}?sent=0#contact`, 303);
+  await c.env.KV.put(k, String(count + 1), { expirationTtl: 3600 });
+  // Any extra fields a form carries are kept too, so new forms need no code changes.
+  const skip = new Set(['name', 'email', 'body', 'back', 'website', 'form']);
+  const extra: Record<string, string> = {};
+  for (const [key, v] of Object.entries(f)) if (!skip.has(key) && typeof v === 'string' && Object.keys(extra).length < 30) extra[key.slice(0, 60)] = v.slice(0, 2000);
+  const form = String(f.form || 'contact').replace(/[^a-z0-9-]/gi, '').slice(0, 40) || 'contact';
+  const row = await c.env.DB.prepare('INSERT INTO messages (name, email, body, form, page, data) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+    .bind(name, email, body, form, back, Object.keys(extra).length ? JSON.stringify(extra) : null).first<{ id: number }>();
+  c.executionCtx.waitUntil(notifyOwner(c.env, new URL(c.req.url).origin, row!.id, { name, email, body, form, page: back, extra }));
+  c.executionCtx.waitUntil(fireEvent(c.env, 'message.received', { id: row!.id, form, name, email, body, page: back, fields: extra }));
+  return c.redirect(`${back}?sent=1#contact`, 303);
+});
+
+// Incoming webhooks. Each one has its own secret address; if it has a signing secret, the
+// sender must sign the body (x-ganders-signature or x-hub-signature-256: sha256=<hex hmac>).
+app.post('/hook/:token{[A-Za-z0-9_-]{20,80}}', async (c) => {
+  const it = await c.env.DB.prepare("SELECT * FROM integrations WHERE kind = 'webhook_in' AND token = ?").bind(c.req.param('token')).first<Integration>();
+  if (!it || !it.active) return c.json({ error: 'Not found' }, 404);
+  const ip = c.req.header('cf-connecting-ip') || 'local';
+  const rk = `rl:hook:${it.id}:${ip}`;
+  const n = Number((await c.env.KV.get(rk)) || 0);
+  if (n >= 60) return c.json({ error: 'Too many requests. Try again later.' }, 429);
+  await c.env.KV.put(rk, String(n + 1), { expirationTtl: 3600 });
+  const raw = (await c.req.text()).slice(0, 200_000);
+  if (it.enc_secret) {
+    const given = (c.req.header('x-ganders-signature') || c.req.header('x-hub-signature-256') || '').replace(/^sha256=/, '');
+    const want = await hmac(await open(c.env.APP_KEY, it.enc_secret), raw);
+    if (!sameText(given.toLowerCase(), want)) { await logIntegration(c.env, it.id, 'in', false, 401, 'Signature did not match.'); return c.json({ error: 'Bad signature' }, 401); }
+  }
+  let data: Record<string, any> = {};
+  const type = c.req.header('content-type') || '';
+  try {
+    if (type.includes('json')) data = JSON.parse(raw || '{}');
+    else if (type.includes('form')) data = Object.fromEntries(new URLSearchParams(raw));
+    else data = { body: raw };
+  } catch { await logIntegration(c.env, it.id, 'in', false, 400, 'The body was not valid JSON.'); return c.json({ error: 'Send JSON or a form.' }, 400); }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) data = { items: data };
+  const str = (...keys: string[]) => { for (const k of keys) if (typeof data[k] === 'string' && data[k].trim()) return data[k].trim(); return ''; };
+  if (it.action === 'knowledge') {
+    const title = (str('title', 'subject', 'name') || `From ${it.name}`).slice(0, 200);
+    const body = (str('body', 'text', 'content', 'message') || JSON.stringify(data, null, 2)).slice(0, 100_000);
+    const r = await c.env.DB.prepare("INSERT INTO knowledge (kind, title, body) VALUES ('note', ?, ?) RETURNING id").bind(title, body).first<{ id: number }>();
+    await c.env.DB.prepare('INSERT INTO knowledge_fts (rowid, title, body) VALUES (?, ?, ?)').bind(r!.id, title, body).run();
+    await logIntegration(c.env, it.id, 'in', true, 200, `Added "${title.slice(0, 60)}" to the knowledge base.`);
+    return c.json({ ok: true, id: r!.id });
+  }
+  const name = (str('name', 'full_name', 'from_name', 'author') || it.name).slice(0, 120);
+  const email = (str('email', 'from', 'reply_to').match(/[^@\s<]+@[^@\s>]+\.[^@\s>]+/)?.[0] || '').slice(0, 200);
+  const body = (str('body', 'message', 'text', 'content', 'comment') || JSON.stringify(data, null, 2)).slice(0, 5000);
+  const form = 'webhook';
+  const extra: Record<string, string> = {};
+  for (const [k, v] of Object.entries(data)) if (Object.keys(extra).length < 30 && !['name', 'email', 'body', 'message', 'text'].includes(k)) extra[k.slice(0, 60)] = (typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 2000);
+  const row = await c.env.DB.prepare('INSERT INTO messages (name, email, body, form, page, data) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+    .bind(name, email, body, form, it.name.slice(0, 80), Object.keys(extra).length ? JSON.stringify(extra) : null).first<{ id: number }>();
+  await logIntegration(c.env, it.id, 'in', true, 200, `New Inbox message from ${name.slice(0, 60)}.`);
+  c.executionCtx.waitUntil(notifyOwner(c.env, new URL(c.req.url).origin, row!.id, { name, email: email || 'no email given', body, form: it.name, page: 'a webhook', extra }));
+  return c.json({ ok: true, id: row!.id });
+});
+
+async function notifyOwner(env: Env, origin: string, id: number, m: { name: string; email: string; body: string; form: string; page: string; extra: Record<string, string> }) {
+  const settings = await getSettings(env);
+  const to = await ownerAddress(env, settings.email);
+  if (!to || !mailReady(env)) return;
+  const studio = `${origin}/admin/messages/${id}`;
+  const extras = Object.entries(m.extra).map(([k, v]) => `${k}: ${v}`).join('\n');
+  const text = `${m.name} (${m.email}) wrote through the ${m.form} form on ${m.page}:\n\n${m.body}${extras ? `\n\n${extras}` : ''}\n\nReply straight to this email, or open it in Studio: ${studio}`;
+  const html = wrapHtml(`<p style="margin:0 0 6px;color:#55646B;font-size:13px">New message from your ${esc(m.form)} form</p>
+<h2 style="margin:0 0 4px;font-size:20px">${esc(m.name)}</h2><p style="margin:0 0 18px"><a href="mailto:${esc(m.email)}" style="color:#1F5F6B">${esc(m.email)}</a></p>
+${textToHtml(m.body)}${extras ? `<p style="margin:0 0 14px;color:#55646B;white-space:pre-wrap">${esc(extras)}</p>` : ''}
+<p style="margin:22px 0 0"><a href="${esc(studio)}" style="display:inline-block;background:#0E1B22;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px">Open in Studio</a></p>`,
+    'Reply to this email to answer them directly.');
+  const r = await sendMail(env, { to, subject: `New message from ${m.name}`, text, html, replyTo: m.email.includes('@') ? m.email : undefined, kind: 'form' }, settings.name);
+  if (r.ok) await env.DB.prepare('UPDATE messages SET emailed = 1 WHERE id = ?').bind(id).run();
+}
+
+app.get('/:slug{[a-z0-9-]+}', (c) => renderPage(c, c.req.param('slug')));
+
+app.notFound((c) => notFound(c));
+
+export default app;
